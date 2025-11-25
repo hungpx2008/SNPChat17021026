@@ -6,8 +6,8 @@ frontend/.vercel/
 
 # Python artifacts
 backend/.venv/
-backend/__pycache__/
-backend/*.pyc
+**/__pycache__/
+*.pyc
 
 # Environment & local config
 backend/.env
