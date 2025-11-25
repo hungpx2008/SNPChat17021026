@@ -1,0 +1,6 @@
+/// <reference types="react" />
+import type { Base } from '../../model';
+export declare const BaseContext: import("react").Context<{
+    base?: Base | undefined;
+    permission?: Partial<Record<"table|create" | "table|delete" | "table|read" | "table|update" | "table|import" | "table|export" | "table|trash_read" | "table|trash_update" | "table|trash_reset" | "base|create" | "base|delete" | "base|read" | "base|read_all" | "base|update" | "base|invite_email" | "base|invite_link" | "base|table_import" | "base|table_export" | "base|authority_matrix_config" | "base|db_connection" | "base|query_data" | "automation|create" | "automation|delete" | "automation|read" | "automation|update" | "table_record_history|read", boolean>> | undefined;
+}>;

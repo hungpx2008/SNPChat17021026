@@ -1,0 +1,30 @@
+import type { RouteConfig } from '@asteasolutions/zod-to-openapi';
+export declare const GET_INSTANCE_USAGE = "/instance/usage";
+export declare const GetInstanceUsageRoute: RouteConfig;
+export declare const getInstanceUsage: () => Promise<import("axios").AxiosResponse<{
+    limit: {
+        maxRows: number;
+        maxSizeAttachments: number;
+        maxNumDatabaseConnections: number;
+        maxRevisionHistoryDays: number;
+        maxAutomationHistoryDays: number;
+        automationEnable: boolean;
+        auditLogEnable: boolean;
+        adminPanelEnable: boolean;
+        rowColoringEnable: boolean;
+        buttonFieldEnable: boolean;
+        fieldAIEnable: boolean;
+        userGroupEnable: boolean;
+        advancedExtensionsEnable: boolean;
+        advancedPermissionsEnable: boolean;
+        passwordRestrictedSharesEnable: boolean;
+        authenticationEnable: boolean;
+        domainVerificationEnable: boolean;
+        organizationEnable: boolean;
+        apiRateLimit: number;
+        chatAIEnable: boolean;
+        appEnable: boolean;
+        customDomainEnable: boolean;
+    };
+    level: import("..").BillingProductLevel;
+}, any>>;

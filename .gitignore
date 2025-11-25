@@ -1,0 +1,18 @@
+# Common dependency & build directories
+**/node_modules/
+frontend/.next/
+frontend/.turbo/
+frontend/.vercel/
+
+# Python artifacts
+backend/.venv/
+backend/__pycache__/
+backend/*.pyc
+
+# Environment & local config
+backend/.env
+frontend/.env.local
+.env.databases
+
+# OS files
+.DS_Store

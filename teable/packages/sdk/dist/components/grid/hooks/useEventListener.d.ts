@@ -1,0 +1,1 @@
+export declare const useEventListener: <K extends keyof HTMLElementEventMap>(eventName: K, handler: (this: HTMLElement, ev: HTMLElementEventMap[K]) => void, element: HTMLElement | Window | null, passive: boolean, capture?: boolean) => void;

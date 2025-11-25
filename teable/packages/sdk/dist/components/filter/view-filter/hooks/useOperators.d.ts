@@ -1,0 +1,2 @@
+import type { FieldCore } from '@teable/core';
+export declare const useOperators: (field?: FieldCore) => ("is" | "contains" | "isNot" | "doesNotContain" | "isEmpty" | "isNotEmpty" | "isGreater" | "isGreaterEqual" | "isLess" | "isLessEqual" | "isAnyOf" | "isNoneOf" | "hasAnyOf" | "hasAllOf" | "hasNoneOf" | "isExactly" | "isWithIn" | "isBefore" | "isAfter" | "isOnOrBefore" | "isOnOrAfter" | "isNotExactly")[];

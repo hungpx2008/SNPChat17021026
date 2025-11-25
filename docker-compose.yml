@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: chatsnp-postgres
+    restart: unless-stopped
+    env_file:
+      - .env.databases
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-chatsnp}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: chatsnp-qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT_HTTP:-6333}:6333"
+      - "${QDRANT_PORT_GRPC:-6334}:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+  redis:
+    image: redis:7-alpine
+    container_name: chatsnp-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    command: ["redis-server", "--save", "60", "1"]
+    volumes:
+      - redis-data:/data
+
+volumes:
+  postgres-data:
+  qdrant-data:
+  redis-data:

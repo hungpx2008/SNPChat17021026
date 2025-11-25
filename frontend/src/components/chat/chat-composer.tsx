@@ -1,0 +1,130 @@
+'use client';
+
+import type { ChangeEvent, RefObject, FormEvent } from "react";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { AttachmentPreview } from "./attachment-preview";
+import { Paperclip, X, Send, LoaderCircle } from "lucide-react";
+import type { AttachedFile } from "./types";
+
+type TranslateFn = (key: string) => string;
+
+interface ChatComposerProps {
+  formRef: RefObject<HTMLFormElement>;
+  textareaRef: RefObject<HTMLTextAreaElement>;
+  fileInputRef: RefObject<HTMLInputElement>;
+  input: string;
+  onInputChange: (value: string) => void;
+  attachedFile: AttachedFile | null;
+  onRemoveAttachment: () => void;
+  onFileAttachClick: () => void;
+  onFileChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onSubmit: (formData: FormData) => Promise<boolean> | boolean;
+  submitting?: boolean;
+  t: TranslateFn;
+}
+
+export function ChatComposer({
+  formRef,
+  textareaRef,
+  fileInputRef,
+  input,
+  onInputChange,
+  attachedFile,
+  onRemoveAttachment,
+  onFileAttachClick,
+  onFileChange,
+  onSubmit,
+  submitting = false,
+  t,
+}: ChatComposerProps) {
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const formData = new FormData(formElement);
+    const handled = await onSubmit(formData);
+    if (!handled) {
+      return;
+    }
+
+    formElement.reset();
+    onInputChange("");
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      textareaRef.current.focus();
+    }
+  };
+
+  return (
+    <footer className="p-4 border-t bg-card">
+      <div className="mx-auto">
+        {attachedFile && (
+          <div className="relative mb-2 w-fit">
+            <div className="p-2 border rounded-lg">
+              <AttachmentPreview file={attachedFile} size="sm" />
+            </div>
+            <Button
+              type="button"
+              variant="destructive"
+              size="icon"
+              className="absolute -top-2 -right-2 h-6 w-6 rounded-full"
+              onClick={onRemoveAttachment}
+            >
+              <X size={16} />
+              <span className="sr-only">{t("removeAttachmentSr")}</span>
+            </Button>
+          </div>
+        )}
+        <form ref={formRef} onSubmit={handleSubmit} className="flex gap-2 items-end">
+          <Button type="button" variant="ghost" size="icon" onClick={onFileAttachClick}>
+            <Paperclip />
+            <span className="sr-only">{t("attachFileSr")}</span>
+          </Button>
+          <input
+            type="file"
+            ref={fileInputRef}
+            className="hidden"
+            onChange={onFileChange}
+            accept="image/*,application/pdf,.doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,audio/*"
+          />
+          <Textarea
+            ref={textareaRef}
+            name="userInput"
+            placeholder={t("chatInputPlaceholder")}
+            className="flex-1 resize-none max-h-48"
+            value={input}
+            onChange={(event) => onInputChange(event.target.value)}
+            autoComplete="off"
+            rows={1}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                formRef.current?.requestSubmit();
+              }
+            }}
+          />
+          <SubmitButton ariaLabel={t("sendButtonSr")} pending={submitting} />
+        </form>
+      </div>
+    </footer>
+  );
+}
+
+function SubmitButton({ ariaLabel, pending }: { ariaLabel: string; pending: boolean }) {
+  return (
+    <Button
+      type="submit"
+      size="icon"
+      disabled={pending}
+      variant="outline"
+      className="bg-accent hover:bg-accent/90 border-0"
+    >
+      {pending ? (
+        <LoaderCircle className="animate-spin text-accent-foreground" />
+      ) : (
+        <Send className="text-accent-foreground" />
+      )}
+      <span className="sr-only">{ariaLabel}</span>
+    </Button>
+  );
+}

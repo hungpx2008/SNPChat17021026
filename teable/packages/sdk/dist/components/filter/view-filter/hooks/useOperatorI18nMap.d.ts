@@ -1,0 +1,25 @@
+import { CellValueType } from '@teable/core';
+export declare const useOperatorI18nMap: (cellValueType?: CellValueType) => {
+    is: string;
+    isNot: string;
+    contains: string;
+    doesNotContain: string;
+    isEmpty: string;
+    isNotEmpty: string;
+    isGreater: string;
+    isGreaterEqual: string;
+    isLess: string;
+    isLessEqual: string;
+    isAnyOf: string;
+    isNoneOf: string;
+    hasAnyOf: string;
+    hasAllOf: string;
+    hasNoneOf: string;
+    isExactly: string;
+    isWithIn: string;
+    isBefore: string;
+    isAfter: string;
+    isOnOrBefore: string;
+    isOnOrAfter: string;
+    isNotExactly: string;
+};

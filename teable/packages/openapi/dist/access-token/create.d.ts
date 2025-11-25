@@ -1,0 +1,80 @@
+import { z } from '../zod';
+export declare const CREATE_ACCESS_TOKEN = "/access-token";
+export declare const createAccessTokenRoSchema: z.ZodObject<{
+    name: z.ZodString;
+    description: z.ZodOptional<z.ZodString>;
+    scopes: z.ZodArray<z.ZodString, "many">;
+    spaceIds: z.ZodOptional<z.ZodNullable<z.ZodArray<z.ZodString, "many">>>;
+    baseIds: z.ZodOptional<z.ZodNullable<z.ZodArray<z.ZodString, "many">>>;
+    hasFullAccess: z.ZodOptional<z.ZodBoolean>;
+    expiredTime: z.ZodEffects<z.ZodString, string, string>;
+}, "strip", z.ZodTypeAny, {
+    name: string;
+    scopes: string[];
+    expiredTime: string;
+    description?: string | undefined;
+    spaceIds?: string[] | null | undefined;
+    baseIds?: string[] | null | undefined;
+    hasFullAccess?: boolean | undefined;
+}, {
+    name: string;
+    scopes: string[];
+    expiredTime: string;
+    description?: string | undefined;
+    spaceIds?: string[] | null | undefined;
+    baseIds?: string[] | null | undefined;
+    hasFullAccess?: boolean | undefined;
+}>;
+export type CreateAccessTokenRo = z.infer<typeof createAccessTokenRoSchema>;
+export declare const createAccessTokenVoSchema: z.ZodObject<{
+    id: z.ZodString;
+    name: z.ZodString;
+    description: z.ZodOptional<z.ZodString>;
+    scopes: z.ZodArray<z.ZodString, "many">;
+    spaceIds: z.ZodOptional<z.ZodNullable<z.ZodArray<z.ZodString, "many">>>;
+    baseIds: z.ZodOptional<z.ZodNullable<z.ZodArray<z.ZodString, "many">>>;
+    hasFullAccess: z.ZodOptional<z.ZodBoolean>;
+    expiredTime: z.ZodString;
+    token: z.ZodString;
+    createdTime: z.ZodString;
+    lastUsedTime: z.ZodString;
+}, "strip", z.ZodTypeAny, {
+    token: string;
+    name: string;
+    id: string;
+    createdTime: string;
+    scopes: string[];
+    expiredTime: string;
+    lastUsedTime: string;
+    description?: string | undefined;
+    spaceIds?: string[] | null | undefined;
+    baseIds?: string[] | null | undefined;
+    hasFullAccess?: boolean | undefined;
+}, {
+    token: string;
+    name: string;
+    id: string;
+    createdTime: string;
+    scopes: string[];
+    expiredTime: string;
+    lastUsedTime: string;
+    description?: string | undefined;
+    spaceIds?: string[] | null | undefined;
+    baseIds?: string[] | null | undefined;
+    hasFullAccess?: boolean | undefined;
+}>;
+export type CreateAccessTokenVo = z.infer<typeof createAccessTokenVoSchema>;
+export declare const createAccessRoute: import("@asteasolutions/zod-to-openapi").RouteConfig;
+export declare const createAccessToken: (body: CreateAccessTokenRo) => Promise<import("axios").AxiosResponse<{
+    token: string;
+    name: string;
+    id: string;
+    createdTime: string;
+    scopes: string[];
+    expiredTime: string;
+    lastUsedTime: string;
+    description?: string | undefined;
+    spaceIds?: string[] | null | undefined;
+    baseIds?: string[] | null | undefined;
+    hasFullAccess?: boolean | undefined;
+}, any>>;
