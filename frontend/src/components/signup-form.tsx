@@ -4,8 +4,6 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { createUserWithEmailAndPassword } from "firebase/auth";
-import { auth } from "@/lib/firebase";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -13,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Logo } from "./logo";
 import { LoaderCircle } from "lucide-react";
 import { useLanguage } from "./language-provider";
+import { useAuth } from "./auth-provider";
 
 
 export function SignupForm() {
@@ -22,16 +21,17 @@ export function SignupForm() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
   const { t } = useLanguage();
+  const { signup } = useAuth();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setLoading(true);
     try {
-      await createUserWithEmailAndPassword(auth, email, password);
+      await signup({ email, password });
       router.push("/");
     } catch (error: any) {
-      setError(error.message);
+      setError(error.message ?? "Unable to create account. Please try again.");
     } finally {
       setLoading(false);
     }

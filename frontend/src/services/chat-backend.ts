@@ -1,24 +1,48 @@
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_BACKEND_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:8000';
+const API_BASE_URL = (process.env.NEXT_PUBLIC_BACKEND_URL ?? '').replace(/\/$/, '');
+
+const isAbsoluteBackendUrl = /^https?:\/\//i.test(API_BASE_URL);
+
+function buildRequestUrl(
+  path: string,
+  query?: Record<string, string | number | undefined>,
+): string {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const queryParams = new URLSearchParams();
+
+  if (query) {
+    Object.entries(query).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        queryParams.set(key, String(value));
+      }
+    });
+  }
+
+  const queryString = queryParams.toString();
+
+  if (isAbsoluteBackendUrl) {
+    const url = new URL(`${API_BASE_URL || ''}${normalizedPath}`);
+    if (queryString) {
+      url.search = queryString;
+    }
+    return url.toString();
+  }
+
+  const base = API_BASE_URL || '';
+  const url = `${base}${normalizedPath}${queryString ? `?${queryString}` : ''}`;
+  return url || normalizedPath;
+}
 
 async function request<T>(
   path: string,
   options: RequestInit = {},
   query?: Record<string, string | number | undefined>,
 ): Promise<T> {
-  const url = new URL(`${API_BASE_URL}${path}`);
-  if (query) {
-    Object.entries(query).forEach(([key, value]) => {
-      if (value !== undefined && value !== null) {
-        url.searchParams.set(key, String(value));
-      }
-    });
-  }
-
+  const url = buildRequestUrl(path, query);
+  const hasBody = typeof options?.body !== 'undefined';
   const response = await fetch(url.toString(), {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
       ...(options.headers ?? {}),
     },
     cache: 'no-store',

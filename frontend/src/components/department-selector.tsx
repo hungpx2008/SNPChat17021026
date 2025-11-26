@@ -13,8 +13,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Logo } from "@/components/logo";
 import { useAuth } from "./auth-provider";
-import { auth } from "@/lib/firebase";
-import { signOut } from "firebase/auth";
 import { useLanguage } from "./language-provider";
 import { TranslationKey } from "@/lib/translations";
 
@@ -29,7 +27,7 @@ const departments: TranslationKey[] = [
 export function DepartmentSelector() {
   const [selectedDepartment, setSelectedDepartment] = useState("");
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const { t } = useLanguage();
 
   const handleStartChat = () => {
@@ -38,8 +36,8 @@ export function DepartmentSelector() {
     }
   };
 
-  const handleSignOut = async () => {
-    await signOut(auth);
+  const handleSignOut = () => {
+    logout();
     router.push('/login');
   };
 

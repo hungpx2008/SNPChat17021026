@@ -3,8 +3,6 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { sendPasswordResetEmail } from "firebase/auth";
-import { auth } from "@/lib/firebase";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -12,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Logo } from "./logo";
 import { LoaderCircle } from "lucide-react";
 import { useLanguage } from "./language-provider";
+import { useAuth } from "./auth-provider";
 
 export function ForgotPasswordForm() {
   const [email, setEmail] = useState("");
@@ -19,6 +18,7 @@ export function ForgotPasswordForm() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const { t } = useLanguage();
+  const { sendPasswordReset } = useAuth();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -26,10 +26,10 @@ export function ForgotPasswordForm() {
     setMessage(null);
     setLoading(true);
     try {
-      await sendPasswordResetEmail(auth, email);
+      await sendPasswordReset(email);
       setMessage(t('passwordResetSent'));
     } catch (error: any) {
-      setError(error.message);
+      setError(error.message ?? "Unable to send password reset email.");
     } finally {
         setLoading(false);
     }

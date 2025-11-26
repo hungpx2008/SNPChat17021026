@@ -9,11 +9,9 @@ import {
   type ChangeEvent,
 } from "react";
 import { useRouter } from "next/navigation";
-import { signOut } from "firebase/auth";
 import { LoaderCircle } from "lucide-react";
 
 import { getHelp } from "../app/actions";
-import { auth } from "../lib/firebase";
 import { useAuth } from "./auth-provider";
 import { useLanguage } from "./language-provider";
 import { SidebarInset, useSidebar } from "./ui/sidebar";
@@ -28,11 +26,11 @@ import { chatBackend, type BackendMessage, type SearchResult } from "../services
 export function ChatUI({ department }: { department: string }) {
   const { t, language, setLanguage } = useLanguage();
   const { open: sidebarOpen } = useSidebar();
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const router = useRouter();
 
   const userIdentifier = useMemo(() => {
-    if (user?.uid) return user.uid;
+    if (user?.id) return user.id;
     if (user?.email) return user.email;
     if (typeof window !== "undefined") {
       const cached = window.localStorage.getItem("chatsnp-guest-id");
@@ -349,8 +347,8 @@ export function ChatUI({ department }: { department: string }) {
     reader.readAsDataURL(file);
   };
 
-  const handleSignOut = async () => {
-    await signOut(auth);
+  const handleSignOut = () => {
+    logout();
     router.push("/login");
   };
 

@@ -4,8 +4,6 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { signInWithEmailAndPassword } from "firebase/auth";
-import { auth } from "@/lib/firebase";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -20,6 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useLanguage } from "./language-provider";
+import { useAuth } from "./auth-provider";
 
 const departments = [
   "itDepartment",
@@ -37,6 +36,7 @@ export function LoginForm() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
   const { t } = useLanguage();
+  const { login } = useAuth();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -47,10 +47,11 @@ export function LoginForm() {
     setError(null);
     setLoading(true);
     try {
-      await signInWithEmailAndPassword(auth, email, password);
+      const departmentLabel = t(department as any);
+      await login({ email, password, department: departmentLabel });
       router.push(`/chat?department=${encodeURIComponent(t(department as any))}`);
     } catch (error: any) {
-      setError(error.message);
+      setError(error.message ?? "Unable to login. Please try again.");
     } finally {
       setLoading(false);
     }
