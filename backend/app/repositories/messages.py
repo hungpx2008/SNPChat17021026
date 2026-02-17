@@ -51,10 +51,23 @@ class MessageRepository:
         await self.session.flush()
         return created_chunks
 
-    async def list_messages(self, session_id: UUID) -> list[ChatMessage]:
-        result = await self.session.execute(
+    async def list_messages(self, session_id: UUID, limit: int | None = None) -> list[ChatMessage]:
+        stmt = (
             select(ChatMessage)
             .where(ChatMessage.session_id == session_id)
             .order_by(ChatMessage.created_at.asc())
         )
+        if limit is not None:
+            stmt = (
+                select(ChatMessage)
+                .where(ChatMessage.session_id == session_id)
+                .order_by(ChatMessage.created_at.desc())
+                .limit(limit)
+            )
+            result = await self.session.execute(stmt)
+            messages = list(result.scalars())
+            messages.reverse()
+            return messages
+
+        result = await self.session.execute(stmt)
         return list(result.scalars())

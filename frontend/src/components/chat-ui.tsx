@@ -264,38 +264,13 @@ export function ChatUI({ department }: { department: string }) {
           metadata: fileToSend ? { attachment: fileToSend } : undefined,
         });
 
-        const conversation = await chatBackend.fetchSession(sessionId);
-        const rawHistory = conversation.messages.slice(0, -1); // exclude current user message
-
-        const normalizedHistory: { role: "user" | "assistant"; content: string }[] = [];
-        for (const msg of rawHistory) {
-          const role = msg.role === "assistant" ? "assistant" : "user";
-          if (normalizedHistory.length === 0 && role === "assistant") {
-            normalizedHistory.push({ role: "user", content: "" });
-          }
-
-          const last = normalizedHistory.at(-1);
-          if (last && last.role === role) {
-            last.content = last.content
-              ? `${last.content}\n${msg.content}`
-              : msg.content;
-          } else {
-            normalizedHistory.push({ role, content: msg.content });
-          }
-        }
-
-        if (normalizedHistory.length && normalizedHistory[0]?.role !== "user") {
-          normalizedHistory.unshift({ role: "user", content: "" });
-        }
-
-        console.log("[ChatUI] normalizedHistory", normalizedHistory);
-
-        const llmResult = await getHelp(
-          userInput,
+        const llmResult = await getHelp({
+          question: userInput,
           department,
-          fileToSend?.dataUri,
-          normalizedHistory,
-        );
+          sessionId,
+          userId: userIdentifier,
+          photoDataUri: fileToSend?.dataUri,
+        });
         const botResponse = llmResult.response;
 
         await chatBackend.appendMessage(sessionId, {

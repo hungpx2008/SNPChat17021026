@@ -3,15 +3,15 @@
 import { z } from 'zod';
 import { localOpenAI, LOCAL_LLM_MODEL } from '@/ai/localClient';
 
-const ConversationTurnSchema = z.object({
-  role: z.enum(['user', 'assistant', 'system']),
-  content: z.string(),
+const ContextBlockSchema = z.object({
+  title: z.string().min(1),
+  content: z.string().min(1),
 });
 
 const ContextualHelpInputSchema = z.object({
   question: z.string().min(1).describe('The user’s question.'),
   department: z.string().min(1).describe('The department selected by the user.'),
-  history: z.array(ConversationTurnSchema).max(50).optional(),
+  context: z.array(ContextBlockSchema).optional(),
 });
 export type ContextualHelpInput = z.infer<typeof ContextualHelpInputSchema>;
 
@@ -33,34 +33,36 @@ export async function getContextualHelp(
 ): Promise<ContextualHelpOutput> {
   const input = ContextualHelpInputSchema.parse(rawInput);
 
+  const contextSections = input.context?.length
+    ? input.context
+        .map((block) => `### ${block.title}\n${block.content}`)
+        .join('\n\n')
+    : 'No prior context provided. Answer using general knowledge and the department rules.';
+
   const systemPrompt =
     "You are a helpful assistant for the " + input.department + " department.\n" +
-    "Your goal is to answer user questions accurately and naturally. Always incorporate the preceding conversation history when forming your answer.\n\n" +
+    "Your goal is to answer user questions accurately and naturally. Always incorporate the available context when forming your answer.\n\n" +
+    "**CONTEXT**\n" +
+    contextSections +
+    "\n\n" +
     "**RULES:**\n" +
     "1.  **Language:** You MUST detect the user's language and reply ONLY in that same language.\n" +
     "2.  **Tone:** Be friendly and natural. Do not say you are an AI.\n" +
     "3.  **Formatting:** When presenting information, use clear and simple language. Use Markdown for basic styling like bold text, italics, and bulleted lists (`*` or `-`).\n" +
-    "    **IMPORTANT**: Do NOT use Markdown tables. For example, do NOT use | Header | or |--|. \n" +
+    "    **IMPORTANT**: Do NOT use Markdown tables. For example, do NOT use | Header | or |--|.\n" +
     "    **If a table is required, you MUST format it using valid HTML table syntax** (with <table>, <thead>, <tbody>, <tr>, <th>, and <td> tags). Ensure the HTML is well-formed and complete.\n" +
-    "4.  **Conversation memory:** Carefully read the conversation history above and reference relevant details explicitly (names, preferences, previous answers) when responding.\n\n" +
-    "Use your knowledge, the provided conversation history, and any additional context to answer the user's question.";
+    "4.  **Conversation memory:** Reference relevant context explicitly (names, preferences, previous answers) when responding.\n\n" +
+    "Use your knowledge, the provided context, and any additional information to answer the user's question.";
 
   const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
     { role: 'system', content: systemPrompt },
+    {
+      role: 'user',
+      content:
+        "Based on the context above (treat it as authoritative and override any prior knowledge), answer the following question as precisely as possible:\n" +
+        input.question,
+    },
   ];
-
-  if (input.history && input.history.length) {
-    for (const turn of input.history) {
-      messages.push({ role: turn.role, content: turn.content });
-    }
-  }
-
-  messages.push({
-    role: 'user',
-    content:
-      "Based on the conversation history above (treat it as the ground truth and override any prior knowledge), answer the following question as precisely as possible:\n" +
-      input.question,
-  });
 
   console.log('[contextual-help] messages payload', messages);
 

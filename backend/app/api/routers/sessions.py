@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models import ChatSession
@@ -54,11 +54,12 @@ async def list_sessions(
 @router.get("/{session_id}", response_model=SessionWithMessages)
 async def get_session(
     session_id: UUID,
+    limit: int | None = Query(default=None, ge=1, le=1000),
     db_session: ChatSession = Depends(get_session_or_404),
     db: AsyncSession = Depends(get_db_session),
 ) -> Any:
     service = ChatService(db)
-    messages = await service.get_session_with_messages(session_id)
+    messages = await service.get_session_with_messages(session_id, limit=limit)
     return {
         "id": session_id,
         "user_id": db_session.user_id,

@@ -7,9 +7,9 @@ import { extractTextFromFile } from '@/services/file-parser';
 const dataUriRegex =
   /^data:([a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+);base64,[A-Za-z0-9+/=]+$/;
 
-const ConversationTurnSchema = z.object({
-  role: z.enum(['user', 'assistant', 'system']),
-  content: z.string(),
+const ContextBlockSchema = z.object({
+  title: z.string().min(1),
+  content: z.string().min(1),
 });
 
 const MultimodalHelpInputSchema = z.object({
@@ -22,7 +22,7 @@ const MultimodalHelpInputSchema = z.object({
     .describe(
       "Optional photo/audio/document as data URI: 'data:<mimetype>;base64,<encoded>'"
     ),
-  history: z.array(ConversationTurnSchema).max(50).optional(),
+  context: z.array(ContextBlockSchema).optional(),
 });
 export type MultimodalHelpInput = z.infer<typeof MultimodalHelpInputSchema>;
 
@@ -74,9 +74,18 @@ export async function getMultimodalHelp(
     }
   }
 
+  const contextSections = input.context?.length
+    ? input.context
+        .map((block) => `### ${block.title}\n${block.content}`)
+        .join('\n\n')
+    : 'No prior context provided. Answer using general knowledge and the department rules.';
+
   const systemPrompt =
     "You are a helpful assistant for the " + input.department + " department.\n" +
-    "Your goal is to answer user questions accurately and naturally. Always incorporate the conversation history when forming your answer.\n\n" +
+    "Your goal is to answer user questions accurately and naturally. Always incorporate the available context when forming your answer.\n\n" +
+    "**CONTEXT**\n" +
+    contextSections +
+    "\n\n" +
     "**RULES:**\n" +
     "1.  **Language:** You MUST detect the user's language and reply ONLY in that same language.\n" +
     "2.  **Tone:** Be friendly and natural. Do not say you are an AI.\n" +
@@ -85,22 +94,16 @@ export async function getMultimodalHelp(
     "    -   Use Markdown for basic styling like bold text, italics, and bulleted lists (`*` or `-`).\n" +
     "    -   **CRITICAL**: Do NOT use Markdown tables. For example, do NOT use | Header | or |---|. \n" +
     "    -   **If a table is required, you MUST format it using valid HTML table syntax** (with <table>, <thead>, <tbody>, <tr>, <th>, and <td> tags). Ensure the HTML is well-formed and complete.\n" +
-    "4.  **Conversation memory:** Carefully read the conversation history above and reference relevant details explicitly when responding.\n\n" +
-    "Use your knowledge, the department context, the conversation history, and any provided document/media to answer the user's question.";
+    "4.  **Conversation memory:** Carefully read the context above and reference relevant details explicitly when responding.\n\n" +
+    "Use your knowledge, the department context, the provided context, and any provided document/media to answer the user's question.";
 
   const baseMessages: { role: 'system' | 'user' | 'assistant'; content: any }[] = [
     { role: 'system', content: systemPrompt },
   ];
 
-  if (input.history && input.history.length) {
-    for (const turn of input.history) {
-      baseMessages.push({ role: turn.role, content: turn.content });
-    }
-  }
-
   if (mode === 'document' || !dataUri) {
     const userText =
-      `Based on the conversation history above (treat it as the authoritative context and override any prior knowledge), answer the question below as precisely as possible.\n\nQuestion:\n${input.question}\n` +
+      `Based on the context above (treat it as authoritative and override any prior knowledge), answer the question below as precisely as possible.\n\nQuestion:\n${input.question}\n` +
       (fileContent
         ? `\nThe user provided a document. Treat it as the PRIMARY source of truth:\n---\n${fileContent}\n---\n`
         : '');
@@ -108,7 +111,6 @@ export async function getMultimodalHelp(
     console.log('[multimodal-help] document payload', {
       mode,
       fileContentLength: fileContent?.length,
-      historyCount: input.history?.length ?? 0,
       userTextPreview: userText.slice(0, 500),
     });
 
@@ -134,7 +136,7 @@ export async function getMultimodalHelp(
   const contentParts: any[] = [{
     type: 'text',
     text:
-      "Based on the conversation history above (treat it as the authoritative context and override any prior knowledge), answer the following question as precisely as possible:\n" +
+      "Based on the context above (treat it as the authoritative context and override any prior knowledge), answer the following question as precisely as possible:\n" +
       input.question,
   }];
 
@@ -159,7 +161,6 @@ export async function getMultimodalHelp(
 
   console.log('[multimodal-help] media payload', {
     mode,
-    historyCount: input.history?.length ?? 0,
     contentPartsPreview: JSON.stringify(contentParts).slice(0, 500),
   });
 

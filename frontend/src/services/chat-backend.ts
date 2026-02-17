@@ -82,6 +82,10 @@ export interface BackendSessionWithMessages extends BackendSession {
   messages: BackendMessage[];
 }
 
+type FetchSessionOptions = {
+  limit?: number;
+};
+
 export interface SearchResult {
   text: string;
   score: number;
@@ -105,8 +109,12 @@ export const chatBackend = {
     });
   },
 
-  async fetchSession(sessionId: string): Promise<BackendSessionWithMessages> {
-    return request<BackendSessionWithMessages>(`/sessions/${sessionId}`);
+  async fetchSession(
+    sessionId: string,
+    options?: FetchSessionOptions,
+  ): Promise<BackendSessionWithMessages> {
+    const query = options?.limit !== undefined ? { limit: options.limit } : undefined;
+    return request<BackendSessionWithMessages>(`/sessions/${sessionId}`, undefined, query);
   },
 
   async appendMessage(

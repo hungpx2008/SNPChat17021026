@@ -42,15 +42,17 @@ class ChatService:
             user_id, limit=self.settings.chat_max_sessions
         )
 
-    async def get_session_with_messages(self, session_id: UUID):
+    async def get_session_with_messages(self, session_id: UUID, limit: int | None = None):
         cache_key = self._cache_key(session_id)
-        cached = await self.redis.get(cache_key)
-        if cached:
-            return json.loads(cached)
+        if limit is None:
+            cached = await self.redis.get(cache_key)
+            if cached:
+                return json.loads(cached)
 
-        messages = await self.message_repo.list_messages(session_id)
+        messages = await self.message_repo.list_messages(session_id, limit=limit)
         payload = [self.serialize_message(message) for message in messages]
-        await self.redis.set(cache_key, json.dumps(payload), ex=3600)
+        if limit is None:
+            await self.redis.set(cache_key, json.dumps(payload), ex=3600)
         return payload
 
     async def add_message(
