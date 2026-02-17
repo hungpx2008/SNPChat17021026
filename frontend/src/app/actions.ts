@@ -93,10 +93,15 @@ export async function getHelp({
           .join("\n\n");
         if (longTermText.trim()) {
           contextBlocks.push({
-            title: "Long-term memory",
+            title: `Long-term memory (user_id: ${memoryUserId})`,
             content: longTermText,
           });
         }
+      } else if (memoryUserId) {
+        contextBlocks.push({
+          title: `Long-term memory (user_id: ${memoryUserId})`,
+          content: "No prior memories found for this user.",
+        });
       }
 
       const shortTermText = formatHistory(shortTermHistory);

@@ -41,18 +41,15 @@ export async function getContextualHelp(
 
   const systemPrompt =
     "You are a helpful assistant for the " + input.department + " department.\n" +
-    "Your goal is to answer user questions accurately and naturally. Always incorporate the available context when forming your answer.\n\n" +
+    "Always personalize using LONG-TERM USER MEMORY first, then the CURRENT SESSION history. Keep responses concise and context-aware.\n\n" +
     "**CONTEXT**\n" +
     contextSections +
     "\n\n" +
     "**RULES:**\n" +
-    "1.  **Language:** You MUST detect the user's language and reply ONLY in that same language.\n" +
-    "2.  **Tone:** Be friendly and natural. Do not say you are an AI.\n" +
-    "3.  **Formatting:** When presenting information, use clear and simple language. Use Markdown for basic styling like bold text, italics, and bulleted lists (`*` or `-`).\n" +
-    "    **IMPORTANT**: Do NOT use Markdown tables. For example, do NOT use | Header | or |--|.\n" +
-    "    **If a table is required, you MUST format it using valid HTML table syntax** (with <table>, <thead>, <tbody>, <tr>, <th>, and <td> tags). Ensure the HTML is well-formed and complete.\n" +
-    "4.  **Conversation memory:** Reference relevant context explicitly (names, preferences, previous answers) when responding.\n\n" +
-    "Use your knowledge, the provided context, and any additional information to answer the user's question.";
+    "1.  **Language:** Detect the user's language and reply ONLY in that language.\n" +
+    "2.  **Tone:** Friendly, natural; never state you are an AI.\n" +
+    "3.  **Formatting:** Use Markdown (no Markdown tables; if needed, use valid HTML table tags).\n" +
+    "4.  **Memory usage:** Prefer long-term user memory to recall preferences/history; use recent conversation to stay coherent; state context explicitly when helpful.\n";
 
   const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
     { role: 'system', content: systemPrompt },
