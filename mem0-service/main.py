@@ -36,12 +36,7 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 HISTORY_DB_PATH = os.environ.get("HISTORY_DB_PATH", "/app/history/history.db")
 
 graph_store_config = None
-if GRAPH_STORE_PROVIDER == "off":
-    graph_store_config = {
-        "provider": "kuzu",
-        "config": {"db": ":memory:"},
-    }
-else:
+if GRAPH_STORE_PROVIDER != "off":
     graph_store_config = {"provider": GRAPH_STORE_PROVIDER}
 
 DEFAULT_CONFIG = {
@@ -56,7 +51,7 @@ DEFAULT_CONFIG = {
             "embedding_model_dims": EMBEDDING_DIM,
         },
     },
-    "graph_store": graph_store_config,
+
     "llm": {
         "provider": LLM_PROVIDER,
         "config": {
@@ -90,6 +85,9 @@ DEFAULT_CONFIG = {
     },
     "history_db_path": HISTORY_DB_PATH,
 }
+
+if graph_store_config:
+    DEFAULT_CONFIG["graph_store"] = graph_store_config
 
 
 MEMORY_INSTANCE = Memory.from_config(DEFAULT_CONFIG)
