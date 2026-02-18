@@ -116,7 +116,9 @@ class ChatService:
             print(f"Error in background chunking: {e}")
 
         # 2. Long-term storage (Mem0)
-        if user_id:
+        # Optimization: Only process messages with significant content (> 10 chars)
+        # to save costs and reduce noise in long-term memory.
+        if user_id and len(content.strip()) > 10:
             try:
                 client = get_client()
                 await client.post(
@@ -267,9 +269,4 @@ def chunk_text(text: str, chunk_size: int) -> list[str]:
     return chunks
 
 
-def summarize_messages(messages: Iterable[str]) -> str:
-    combined = " ".join(messages)
-    sentences = combined.split(".")
-    summary = ". ".join(sentence.strip() for sentence in sentences[:3] if sentence.strip())
-    summary = summary[:400]
-    return summary or combined[:400]
+
