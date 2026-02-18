@@ -35,12 +35,12 @@ services:
 
   mem0:
     build:
-      context: ./mem0
-      dockerfile: server/dev.Dockerfile
+      context: ./mem0-service
+      dockerfile: Dockerfile
     container_name: chatsnp-mem0
     restart: unless-stopped
     env_file:
-      - ./mem0/server/.env
+      - ./mem0-service/.env
     environment:
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
@@ -54,9 +54,8 @@ services:
     ports:
       - "8888:8000"
     volumes:
-      - ./mem0/server/history:/app/history
-      - ./mem0/server:/app
-      - ./mem0/mem0:/app/packages/mem0
+      - ./mem0-service/history:/app/history
+      - ./mem0-service:/app
       - huggingface-cache:/root/.cache/huggingface
     depends_on:
       qdrant:
