@@ -7,6 +7,7 @@ const BACKEND_INTERNAL_URL = (process.env.BACKEND_INTERNAL_URL ?? 'http://127.0.
 
 const nextConfig: NextConfig = {
   /* config options here */
+  output: 'standalone',
   typescript: {
     ignoreBuildErrors: true,
   },

@@ -1,4 +1,8 @@
-const API_BASE_URL = (process.env.NEXT_PUBLIC_BACKEND_URL ?? '').replace(/\/$/, '');
+const API_BASE_URL = (
+  (typeof window === 'undefined' ? process.env.BACKEND_INTERNAL_URL : undefined) ||
+  process.env.NEXT_PUBLIC_BACKEND_URL ||
+  ''
+).replace(/\/$/, '');
 
 const isAbsoluteBackendUrl = /^https?:\/\//i.test(API_BASE_URL);
 
@@ -49,7 +53,18 @@ async function request<T>(
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
+    let errorText = await response.text();
+    try {
+      const errorJson = JSON.parse(errorText);
+      // Handle nested error structure from backend (e.g. { status: { error: "..." } })
+      if (errorJson.status?.error) {
+        errorText = errorJson.status.error;
+      } else if (errorJson.detail) {
+        errorText = typeof errorJson.detail === 'string' ? errorJson.detail : JSON.stringify(errorJson.detail);
+      }
+    } catch {
+      // ignore JSON parse error, use raw text
+    }
     throw new Error(
       `Backend request failed: ${response.status} ${response.statusText} - ${errorText}`,
     );
@@ -89,6 +104,7 @@ type FetchSessionOptions = {
 export interface SearchResult {
   text: string;
   score: number;
+  source: string;
   metadata: Record<string, any>;
 }
 

@@ -64,6 +64,7 @@ class SearchQuery(BaseModel):
 class SearchResult(BaseModel):
     text: str
     score: float
+    source: str
     metadata: dict[str, Any]
 
 

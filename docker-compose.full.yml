@@ -1,0 +1,113 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: chatsnp-postgres
+    restart: unless-stopped
+    env_file:
+      - .env.databases
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-chatsnp}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d
+
+  redis:
+    image: redis:7-alpine
+    container_name: chatsnp-redis
+    restart: unless-stopped
+    command: [ "redis-server", "--save", "60", "1" ]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: chatsnp-qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT_HTTP:-6333}:6333"
+      - "${QDRANT_PORT_GRPC:-6334}:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+  mem0:
+    build:
+      context: ./mem0
+      dockerfile: server/dev.Dockerfile
+    container_name: chatsnp-mem0
+    restart: unless-stopped
+    env_file:
+      - ./mem0/server/.env
+    environment:
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      QDRANT_COLLECTION: mem0_memories
+      EMBEDDER_PROVIDER: huggingface
+      EMBEDDER_MODEL: thanhtantran/Vietnamese_Embedding_v2
+      EMBEDDING_DIM: 1024
+      GRAPH_STORE_PROVIDER: off
+      HISTORY_DB_PATH: /app/history/history.db
+      HF_HOME: /root/.cache/huggingface
+    ports:
+      - "8888:8000"
+    volumes:
+      - ./mem0/server/history:/app/history
+      - ./mem0/server:/app
+      - ./mem0/mem0:/app/packages/mem0
+      - huggingface-cache:/root/.cache/huggingface
+    depends_on:
+      qdrant:
+        condition: service_started
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: chatsnp-backend
+    restart: unless-stopped
+    env_file:
+      - backend/.env
+    volumes:
+      - ./backend:/app
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-chatsnp}:${POSTGRES_PASSWORD:-12345678}@postgres:5432/${POSTGRES_DB:-chatsnp}
+      REDIS_URL: redis://redis:6379/0
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: mem0_memories
+      MEM0_URL: http://chatsnp-mem0:8000
+      CORS_ALLOW_ORIGINS: http://localhost:3000,http://localhost:9002,http://127.0.0.1:9002
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - qdrant
+      - redis
+      - mem0
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: chatsnp-frontend
+    restart: unless-stopped
+    env_file:
+      - frontend/.env.local
+    environment:
+      NEXT_PUBLIC_BACKEND_URL: http://localhost:8000
+      BACKEND_INTERNAL_URL: http://backend:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  postgres-data:
+  redis-data:
+  qdrant-data:
+  huggingface-cache:

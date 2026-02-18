@@ -16,6 +16,8 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="ChatSNP Backend", version="0.1.0")
 
+    print(f"DEBUG: Allowed Origins: {settings.allowed_origins}")
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.allowed_origins,
@@ -23,6 +25,27 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request, exc):
+        import logging
+        logging.exception("Unhandled exception:")
+        from fastapi.responses import JSONResponse
+        
+        # Manually add CORS headers to exception response
+        # because middleware is bypassed for exception handlers
+        headers = {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Allow-Credentials": "true",
+        }
+        
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(exc), "type": type(exc).__name__},
+            headers=headers
+        )
 
     @app.on_event("startup")
     async def on_startup() -> None:

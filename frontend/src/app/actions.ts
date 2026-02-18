@@ -65,16 +65,17 @@ export async function getHelp({
 
   const requestPromise = (async () => {
     try {
-      const memory = await getMemory();
-
-      let longTermContext: any[] = [];
-      if (memoryUserId) {
-        try {
-          // Keep top 5 most similar for context
-          longTermContext = await memory.search(question, { user_id: memoryUserId, limit: 5 });
-        } catch (error) {
-          console.error("[getHelp] Mem0 search failed", error);
-        }
+      let contextResults: any[] = [];
+      try {
+        // Now calling backend semantic search which combines both Qdrant chunks and Mem0 memories
+        contextResults = await chatBackend.semanticSearch({
+          user_id: memoryUserId,
+          department,
+          query: question,
+          limit: 5,
+        });
+      } catch (error) {
+        console.error("[getHelp] Semantic search failed", error);
       }
 
       let shortTermHistory: BackendMessage[] = [];
@@ -86,24 +87,39 @@ export async function getHelp({
       }
 
       const contextBlocks: ContextBlock[] = [];
-      if (Array.isArray(longTermContext) && longTermContext.length) {
-        const longTermText = longTermContext
-          .map((item, index) => {
-            const text = truncate(item?.text ?? item?.content ?? "", 500);
-            const score = typeof item?.score === "number" ? ` (score: ${item.score.toFixed(3)})` : "";
-            return `#${index + 1}${score}\n${text}`;
-          })
-          .join("\n\n");
-        if (longTermText.trim()) {
+      if (Array.isArray(contextResults) && contextResults.length) {
+        const longTermMemories = contextResults.filter(r => r.source === 'long_term');
+        const shortTermChunks = contextResults.filter(r => r.source === 'short_term');
+
+        if (longTermMemories.length) {
           contextBlocks.push({
-            title: `Long-term memory (user_id: ${memoryUserId})`,
-            content: longTermText,
+            title: `Long-term memory (from Mem0)`,
+            content: longTermMemories
+              .map((item, index) => {
+                const text = truncate(item?.text ?? "", 500);
+                const score = typeof item?.score === "number" ? ` (score: ${item.score.toFixed(3)})` : "";
+                return `#${index + 1}${score}\n${text}`;
+              })
+              .join("\n\n")
+          });
+        }
+
+        if (shortTermChunks.length) {
+          contextBlocks.push({
+            title: `Relevant local data (from Qdrant)`,
+            content: shortTermChunks
+              .map((item, index) => {
+                const text = truncate(item?.text ?? "", 500);
+                const score = typeof item?.score === "number" ? ` (score: ${item.score.toFixed(3)})` : "";
+                return `#${index + 1}${score}\n${text}`;
+              })
+              .join("\n\n")
           });
         }
       } else if (memoryUserId) {
         contextBlocks.push({
-          title: `Long-term memory (user_id: ${memoryUserId})`,
-          content: "No prior memories found for this user.",
+          title: `Memory status`,
+          content: "No prior memories or relevant documents found.",
         });
       }
 
@@ -117,28 +133,15 @@ export async function getHelp({
 
       const llmResult = photoDataUri
         ? await getMultimodalHelp({
-            question,
-            department,
-            photoDataUri,
-            context: contextBlocks,
-          })
+          question,
+          department,
+          photoDataUri,
+          context: contextBlocks,
+        })
         : await getContextualHelp({ question, department, context: contextBlocks, user_id: memoryUserId });
 
-      if (memoryUserId) {
-        // Truncate answer aggressively to avoid long writes and reduce token/risk of irrelevant noise
-        const trimmedAnswer =
-          llmResult.response.length > 200 ? `${llmResult.response.slice(0, 200)}...` : llmResult.response;
-        const memoryText = `${question}\nASSISTANT: ${trimmedAnswer}`;
-        void memory
-          .add({
-            user_id: memoryUserId,
-            text: memoryText,
-            metadata: { session_id: sessionId, department },
-          })
-          .catch((error: unknown) => {
-            console.error("[getHelp] Failed to persist to Mem0", error);
-          });
-      }
+      // NOTE: We no longer call memory.add here. 
+      // The backend 'appendMessage' service already handles persisting to Mem0.
 
       return llmResult;
     } catch (error) {

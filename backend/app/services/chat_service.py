@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Iterable
 from uuid import UUID, uuid4
@@ -7,12 +8,16 @@ from uuid import UUID, uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
-from ..embeddings import mock_embed
+from ..embeddings import embed_text, get_client
 from ..qdrant_client import search_vectors, upsert_vectors
 from ..redis_client import get_redis
 from ..repositories.messages import MessageRepository
 from ..repositories.sessions import SessionRepository
 from ..schemas import MessageCreate, SearchQuery
+
+
+import httpx
+from fastapi import BackgroundTasks
 
 
 class ChatService:
@@ -30,8 +35,6 @@ class ChatService:
         title: str | None,
         external_id: str | None,
     ):
-        if user_id:
-            await self._ensure_session_limit(user_id)
         chat_session = await self.session_repo.create_session(
             user_id=user_id, department=department, title=title, external_id=external_id
         )
@@ -59,6 +62,7 @@ class ChatService:
         self,
         session_id: UUID,
         message: MessageCreate,
+        background_tasks: BackgroundTasks,
         *,
         user_id: str | None,
         department: str | None,
@@ -69,78 +73,128 @@ class ChatService:
             content=message.content,
             metadata=message.metadata or {},
         )
-
-        await self._chunk_and_store(
-          session_id,
-          db_message.id,
-          message.content,
-          user_id,
-          department,
-        )
         await self.session.flush()
 
+        # Update cache immediately with the new message
         cache_key = self._cache_key(session_id)
         all_messages = await self.message_repo.list_messages(session_id)
         cache_payload = [self.serialize_message(msg) for msg in all_messages]
         await self.redis.set(cache_key, json.dumps(cache_payload), ex=3600)
 
+        # Offload heavy lifting to background
+        background_tasks.add_task(
+            self._process_message_background,
+            session_id=session_id,
+            message_id=db_message.id,
+            content=message.content,
+            role=message.role,
+            user_id=user_id,
+            department=department,
+        )
+
         return db_message
 
+    async def _process_message_background(
+        self,
+        session_id: UUID,
+        message_id: UUID,
+        content: str,
+        role: str,
+        user_id: str | None,
+        department: str | None,
+    ):
+        # 1. Short-term storage (Short Chunks for RAG)
+        try:
+            await self._chunk_and_store(
+                session_id,
+                message_id,
+                content,
+                user_id,
+                department,
+            )
+        except Exception as e:
+            print(f"Error in background chunking: {e}")
+
+        # 2. Long-term storage (Mem0)
+        if user_id:
+            try:
+                client = get_client()
+                await client.post(
+                    f"{self.settings.mem0_url.rstrip('/')}/memories",
+                    json={
+                        "user_id": user_id,
+                        "messages": [{"role": role, "content": content}],
+                        "metadata": {"session_id": str(session_id), "department": department}
+                    }
+                )
+            except Exception as e:
+                print(f"Warning: Failed to persist message to Mem0: {e}")
+
     async def semantic_search(self, query: SearchQuery):
-        query_vector = mock_embed(query.query)
+        query_vector = await embed_text(query.query)
         filters: dict[str, Any] = {}
         if query.user_id:
             filters["user_id"] = query.user_id
         if query.department:
             filters["department"] = query.department
 
-        chunk_results = search_vectors(
-            collection="chat_chunks",
-            vector=query_vector,
-            limit=query.limit,
-            filters=filters or None,
-        )
-        summary_results = search_vectors(
-            collection="long_term_memory",
-            vector=query_vector,
-            limit=query.limit,
-            filters=filters or None,
-        )
+        # Define search tasks
+        async def search_qdrant():
+            return search_vectors(
+                collection="chat_chunks",
+                vector=query_vector,
+                limit=query.limit,
+                filters=filters or None,
+            )
 
-        def convert(points):
+        async def search_mem0():
+            if not query.user_id:
+                return []
+            try:
+                client = get_client()
+                resp = await client.post(
+                    f"{self.settings.mem0_url.rstrip('/')}/search",
+                    json={
+                        "query": query.query,
+                        "user_id": query.user_id,
+                        "limit": query.limit
+                    }
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data.get("results", [])
+            except Exception as e:
+                print(f"Warning: Mem0 search failed: {e}")
+            return []
+
+        # Run searches in parallel
+        chunk_results, mem0_results = await asyncio.gather(search_qdrant(), search_mem0())
+
+        def convert_qdrant(points):
             return [
                 {
                     "text": point.payload.get("text", ""),
                     "score": point.score or 0.0,
                     "metadata": point.payload,
+                    "source": "short_term"
                 }
                 for point in points
             ]
 
-        combined = convert(chunk_results) + convert(summary_results)
+        def convert_mem0(results):
+            return [
+                {
+                    "text": item.get("text") or item.get("memory") or "",
+                    "score": item.get("score") or 0.0,
+                    "metadata": item.get("metadata") or {},
+                    "source": "long_term"
+                }
+                for item in results
+            ]
+
+        combined = convert_qdrant(chunk_results) + convert_mem0(mem0_results)
         combined.sort(key=lambda item: item["score"], reverse=True)
         return combined[: query.limit]
-
-    async def _ensure_session_limit(self, user_id: str) -> None:
-        count = await self.session_repo.count_sessions_for_user(user_id)
-        if count < self.settings.chat_max_sessions:
-            return
-        overflow_sessions = await self.session_repo.get_sessions_exceeding_limit(
-            user_id, self.settings.chat_max_sessions - 1
-        )
-        for session in overflow_sessions:
-            messages = await self.session_repo.get_session_messages(session.id)
-            summary = summarize_messages([msg.content for msg in messages])
-            vector = mock_embed(summary)
-            payload = {
-                "user_id": user_id,
-                "session_id": str(session.id),
-                "text": summary,
-                "type": "summary",
-            }
-            upsert_vectors("long_term_memory", [payload], [vector])
-            await self.session_repo.delete_sessions([session.id])
-            await self.redis.delete(self._cache_key(session.id))
 
     async def _chunk_and_store(
         self,
@@ -151,7 +205,9 @@ class ChatService:
         department: str | None,
     ) -> None:
         chunks = chunk_text(content, self.settings.chat_chunk_size)
-        vectors = [mock_embed(chunk) for chunk in chunks]
+        # Process embeddings concurrently
+        vectors = await asyncio.gather(*[embed_text(chunk) for chunk in chunks])
+        
         payloads = []
         vector_ids = []
         for index, (chunk, vector) in enumerate(zip(chunks, vectors)):

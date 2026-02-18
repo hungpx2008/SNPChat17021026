@@ -16,7 +16,7 @@ def get_qdrant_client() -> QdrantClient:
         settings = get_settings()
         _client = QdrantClient(
             url=settings.qdrant_http_url,
-            grpc_port=settings.qdrant_grpc_url,
+            grpc_port=int(settings.qdrant_grpc_url) if settings.qdrant_grpc_url else None,
         )
         ensure_collections(_client, settings.embedding_dimension)
     return _client
@@ -27,13 +27,13 @@ def ensure_collections(client: QdrantClient, vector_size: int) -> None:
     existing = {collection.name for collection in collections}
 
     if "chat_chunks" not in existing:
-        client.recreate_collection(
+        client.create_collection(
             collection_name="chat_chunks",
             vectors_config=qmodels.VectorParams(size=vector_size, distance=qmodels.Distance.COSINE),
         )
 
     if "long_term_memory" not in existing:
-        client.recreate_collection(
+        client.create_collection(
             collection_name="long_term_memory",
             vectors_config=qmodels.VectorParams(size=vector_size, distance=qmodels.Distance.COSINE),
         )
@@ -63,13 +63,13 @@ def search_vectors(
     filters: dict[str, Any] | None = None,
 ) -> list[qmodels.ScoredPoint]:
     client = get_qdrant_client()
-    return client.search(
+    return client.query_points(
         collection_name=collection,
-        query_vector=vector,
+        query=vector,
         limit=limit,
         query_filter=qmodels.Filter(
             must=[qmodels.FieldCondition(key=key, match=qmodels.MatchValue(value=value)) for key, value in (filters or {}).items()]
         )
         if filters
         else None,
-    )
+    ).points

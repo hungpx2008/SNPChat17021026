@@ -134,6 +134,21 @@ def set_config(config: Dict[str, Any]):
     return {"message": "Configuration set successfully"}
 
 
+@app.post("/embed", summary="Generate embedding")
+def generate_embedding(payload: Dict[str, str]):
+    """Expose the internal embedder for other services to use."""
+    text = payload.get("text")
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required")
+    try:
+        # MEMORY_INSTANCE.embedding_model is the initialized embedder from config
+        vector = MEMORY_INSTANCE.embedding_model.embed(text, "search")
+        return {"vector": vector}
+    except Exception as e:
+        logging.exception("Error in generate_embedding:")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/memories", summary="Create memories")
 def add_memory(memory_create: MemoryCreate):
     """Store new memories."""

@@ -1,36 +1,41 @@
 import hashlib
 import math
-from functools import lru_cache
-
-from sentence_transformers import SentenceTransformer
-
+import httpx
 from .config import get_settings
 
+_client = None
 
-@lru_cache(maxsize=1)
-def get_embedding_model():
+def get_client():
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(timeout=60.0)
+    return _client
+
+async def embed_text(text: str) -> list[float]:
     """
-    Tải và cache mô hình embedding.
-    Sử dụng lru_cache để đảm bảo mô hình chỉ được tải vào bộ nhớ một lần.
+    Tạo embedding bằng cách gọi sang Mem0 Service trung tâm qua REST API.
     """
-    # Bạn có thể chọn bất kỳ mô hình nào từ Hugging Face Hub
-    # 'all-MiniLM-L6-v2' là một lựa chọn tốt, cân bằng giữa tốc độ và chất lượng.
-    return SentenceTransformer("all-MiniLM-L6-v2")
-
-
-def embed_text(text: str) -> list[float]:
-    """Tạo embedding cho một đoạn văn bản bằng mô hình SentenceTransformer."""
     settings = get_settings()
-    model = get_embedding_model()
-    embedding = model.encode(text)
-
-    # Kích thước embedding của 'all-MiniLM-L6-v2' là 384.
-    # Đảm bảo giá trị `embedding_dimension` trong config của bạn khớp với mô hình.
-    if len(embedding) != settings.embedding_dimension:
-        # Có thể thêm logic để xử lý lỗi hoặc điều chỉnh kích thước ở đây nếu cần.
-        print(f"Warning: Model dimension {len(embedding)} does not match config dimension {settings.embedding_dimension}.")
-
-    return embedding.tolist()
+    client = get_client()
+    try:
+        response = await client.post(
+            f"{settings.mem0_url.rstrip('/')}/embed",
+            json={"text": text}
+        )
+        response.raise_for_status()
+        data = response.json()
+        embedding = data["vector"]
+        
+        # Kiểm tra kích thước vector trả về
+        if len(embedding) != settings.embedding_dimension:
+            print(f"Warning: Mem0 vector dim {len(embedding)} != config {settings.embedding_dimension}")
+            
+        return embedding
+    except Exception as e:
+        print(f"Error calling Mem0 embedding service: {e}")
+        # Trong trường hợp service chết hoàn toàn, có thể dùng mock_embed 
+        # nhưng tốt nhất là để raise để báo hiệu sự cố hạ tầng.
+        raise
 
 
 def mock_embed(text: str) -> list[float]:

@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncEngine
+from unittest.mock import MagicMock, patch
 
 from app.config import get_settings
 from app.db import Base, get_engine
@@ -26,8 +27,15 @@ def event_loop():
 
 @pytest.fixture(scope="session")
 async def app() -> FastAPI:
-    application = create_app()
-    return application
+    # Mock embedding model to prevent download during tests
+    with patch("app.embeddings.get_embedding_model") as mock_get_model:
+        mock_model = MagicMock()
+        # Mock encode to return a vector of size EMBEDDING_DIMENSION (1024)
+        mock_model.encode.return_value = [0.1] * 1024
+        mock_get_model.return_value = mock_model
+        
+        application = create_app()
+        return application
 
 
 @pytest_asyncio.fixture(scope="session", autouse=True)

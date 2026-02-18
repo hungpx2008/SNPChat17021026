@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models import ChatSession
@@ -75,6 +75,7 @@ async def get_session(
 async def add_message(
     session_id: UUID,
     payload: MessageCreate,
+    background_tasks: BackgroundTasks,
     db_session: ChatSession = Depends(get_session_or_404),
     db: AsyncSession = Depends(get_db_session),
 ) -> Any:
@@ -82,6 +83,7 @@ async def add_message(
     message = await service.add_message(
         session_id=session_id,
         message=payload,
+        background_tasks=background_tasks,
         user_id=db_session.user_id,
         department=db_session.department,
     )
