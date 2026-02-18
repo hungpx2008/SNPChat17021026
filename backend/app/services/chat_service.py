@@ -103,8 +103,19 @@ class ChatService:
         user_id: str | None,
         department: str | None,
     ):
+        from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+
+        # Define retry policy: Wait 1s, 2s, 4s... up to 10s. Stop after 3 attempts.
+        retry_policy = dict(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=1, max=10),
+            retry=retry_if_exception_type(Exception),
+            reraise=True
+        )
+
         # 1. Short-term storage (Short Chunks for RAG)
-        try:
+        @retry(**retry_policy)
+        async def safe_chunk_and_store():
             await self._chunk_and_store(
                 session_id,
                 message_id,
@@ -112,14 +123,17 @@ class ChatService:
                 user_id,
                 department,
             )
+
+        try:
+            await safe_chunk_and_store()
         except Exception as e:
-            print(f"Error in background chunking: {e}")
+            print(f"Error in background chunking after retries: {e}")
 
         # 2. Long-term storage (Mem0)
         # Optimization: Only process messages with significant content (> 10 chars)
-        # to save costs and reduce noise in long-term memory.
         if user_id and len(content.strip()) > 10:
-            try:
+            @retry(**retry_policy)
+            async def safe_mem0_store():
                 client = get_client()
                 await client.post(
                     f"{self.settings.mem0_url.rstrip('/')}/memories",
@@ -129,8 +143,11 @@ class ChatService:
                         "metadata": {"session_id": str(session_id), "department": department}
                     }
                 )
+
+            try:
+                await safe_mem0_store()
             except Exception as e:
-                print(f"Warning: Failed to persist message to Mem0: {e}")
+                print(f"Warning: Failed to persist message to Mem0 after retries: {e}")
 
     async def semantic_search(self, query: SearchQuery):
         query_vector = await embed_text(query.query)
