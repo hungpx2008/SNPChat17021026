@@ -3,8 +3,7 @@ services:
     image: postgres:16
     container_name: chatsnp-postgres
     restart: unless-stopped
-    env_file:
-      - .env
+
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./docker/initdb:/docker-entrypoint-initdb.d
@@ -18,8 +17,6 @@ services:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
-    env_file:
-      - .env
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -30,8 +27,6 @@ services:
       - "${QDRANT_PORT_GRPC:-6334}:6334"
     volumes:
       - qdrant-data:/qdrant/storage
-    env_file:
-      - .env
 
   mem0:
     build:
@@ -39,8 +34,7 @@ services:
       dockerfile: Dockerfile
     container_name: chatsnp-mem0
     restart: unless-stopped
-    env_file:
-      - .env
+
     environment:
       # Explicitly pass these if they conflict or need overriding
       QDRANT_HOST: qdrant
@@ -69,8 +63,7 @@ services:
       dockerfile: Dockerfile
     container_name: chatsnp-backend
     restart: unless-stopped
-    env_file:
-      - .env
+
     volumes:
       - ./backend:/app
     environment:
@@ -97,8 +90,7 @@ services:
       dockerfile: Dockerfile
     container_name: chatsnp-frontend
     restart: unless-stopped
-    env_file:
-      - .env
+
     environment:
       NEXT_PUBLIC_BACKEND_URL: http://localhost:8000
       BACKEND_INTERNAL_URL: http://backend:8000
