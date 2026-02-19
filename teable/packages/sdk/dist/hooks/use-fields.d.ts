@@ -1,4 +1,0 @@
-export declare function useFields(options?: {
-    withHidden?: boolean;
-    withDenied?: boolean;
-}): (import("..").AttachmentField | import("..").AutoNumberField | import("../model/field/button.field").ButtonField | import("..").CheckboxField | import("..").ConditionalRollupField | import("..").CreatedByField | import("..").CreatedTimeField | import("..").DateField | import("..").FormulaField | import("..").LastModifiedByField | import("..").LastModifiedTimeField | import("..").LinkField | import("..").LongTextField | import("..").MultipleSelectField | import("..").NumberField | import("..").RatingField | import("..").RollupField | import("..").SingleLineTextField | import("..").SingleSelectField | import("..").UserField)[];

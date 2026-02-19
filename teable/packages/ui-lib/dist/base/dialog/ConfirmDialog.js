@@ -1,7 +1,0 @@
-import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
-import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger, } from '../../shadcn';
-import { Spin } from '../spin/Spin';
-export const ConfirmDialog = (props) => {
-    const { open, contentClassName, title, description, closeable, onOpenChange, children, content, cancelText, confirmText, confirmLoading, confirmDisabled, onConfirm, onCancel, } = props;
-    return (_jsxs(Dialog, { open: open, onOpenChange: onOpenChange, children: [children && _jsx(DialogTrigger, { asChild: true, children: children }), _jsxs(DialogContent, { className: contentClassName, closeable: closeable, onPointerDownOutside: (e) => e.preventDefault(), onInteractOutside: (e) => e.preventDefault(), onMouseDown: (e) => e.stopPropagation(), onClick: (e) => e.stopPropagation(), children: [(title || description) && (_jsxs(DialogHeader, { children: [title && _jsx(DialogTitle, { children: title }), description && _jsx(DialogDescription, { children: description })] })), content, (cancelText || confirmText) && (_jsxs(DialogFooter, { children: [cancelText && (_jsx(Button, { size: 'sm', variant: 'ghost', onClick: onCancel, children: cancelText })), confirmText && (_jsxs(Button, { size: 'sm', onClick: onConfirm, disabled: confirmDisabled, children: [confirmLoading && _jsx(Spin, {}), confirmText] }))] }))] })] }));
-};

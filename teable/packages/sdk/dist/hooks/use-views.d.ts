@@ -1,1 +1,0 @@
-export declare function useViews(): (import("..").CalendarView | import("..").FormView | import("..").GalleryView | import("..").GridView | import("..").KanbanView | import("../model/view/plugin.view").PluginView)[];
