@@ -45,6 +45,26 @@ pip install -e .
 uvicorn app.main:app --reload
 ```
 
+### 🚀 Deployment (Simplified)
+
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/hungpx2008/SNPChat17021026.git
+    cd SNPChat17021026
+    ```
+
+2.  **Setup Environment:**
+    Copy the example configuration to a real `.env` file:
+    ```bash
+    cp .env.example .env
+    ```
+    *Edit `.env` and fill in your secrets (API Keys, Passwords).*
+
+3.  **Run with Docker Compose:**
+    ```bash
+    docker compose -f docker-compose.full.yml up -d --build
+    ```
+
 ### Frontend
 ```bash
 cd frontend
