@@ -1,5 +1,4 @@
-import hashlib
-import math
+
 import httpx
 from .config import get_settings
 
@@ -38,27 +37,4 @@ async def embed_text(text: str) -> list[float]:
         raise
 
 
-def mock_embed(text: str) -> list[float]:
-    """
-    Deterministic, lightweight embedding used for development and tests.
-    Matches configured embedding_dimension to stay compatible with Qdrant setup.
-    """
-    settings = get_settings()
-    dim = settings.embedding_dimension
-    if dim <= 0:
-        dim = 8
-    vector = [0.0] * dim
-    if not text:
-        return vector
 
-    tokens = text.split()
-    for index, token in enumerate(tokens):
-        # Hash each token to spread signal across dimensions.
-        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        value = int(digest[:8], 16) / float(0xFFFFFFFF)
-        bucket = index % dim
-        vector[bucket] += value
-
-    # Normalize to unit length to mimic cosine-based embeddings.
-    norm = math.sqrt(sum(x * x for x in vector)) or 1.0
-    return [x / norm for x in vector]
