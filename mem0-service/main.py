@@ -33,6 +33,7 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 OPENROUTER_API_BASE = os.environ.get("OPENROUTER_API_BASE")
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
+HF_TOKEN = os.environ.get("HF_TOKEN")
 HISTORY_DB_PATH = os.environ.get("HISTORY_DB_PATH", "/app/history/history.db")
 
 graph_store_config = None
@@ -47,7 +48,6 @@ DEFAULT_CONFIG = {
             "host": QDRANT_HOST,
             "port": QDRANT_PORT,
             "collection_name": QDRANT_COLLECTION,
-            "api_key": QDRANT_API_KEY,
             "embedding_model_dims": EMBEDDING_DIM,
         },
     },
@@ -81,6 +81,10 @@ DEFAULT_CONFIG = {
             "model": EMBEDDER_MODEL,
             "embedding_dims": EMBEDDING_DIM,
             "output_dimensionality": EMBEDDING_DIM,
+            # Pass HF token for downloading gated/private HuggingFace models
+            **({
+                "model_kwargs": {"token": HF_TOKEN}
+            } if EMBEDDER_PROVIDER == "huggingface" and HF_TOKEN else {}),
         },
     },
     "history_db_path": HISTORY_DB_PATH,

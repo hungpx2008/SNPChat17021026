@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterable, Optional
 from uuid import UUID
 
@@ -106,5 +106,5 @@ class SessionRepository:
             ChatSession.__table__
             .update()
             .where(ChatSession.id == session_id)
-            .values(title=title, updated_at=datetime.utcnow())
+            .values(title=title, updated_at=datetime.now(timezone.utc))
         )

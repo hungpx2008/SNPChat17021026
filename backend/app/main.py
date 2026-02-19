@@ -8,8 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api.routers import sessions as sessions_router
 from .api.routers import admin as admin_router
 from .config import get_settings
-from .db import get_engine
+from .db import get_engine, create_tables
 from .qdrant_client import get_qdrant_client
+from . import models  # noqa: F401 — register ORM models with Base.metadata
 
 
 def create_app() -> FastAPI:
@@ -32,10 +33,15 @@ def create_app() -> FastAPI:
         logging.exception("Unhandled exception:")
         from fastapi.responses import JSONResponse
         
-        # Manually add CORS headers to exception response
-        # because middleware is bypassed for exception handlers
+        # Use first allowed origin (or * if wildcard is configured)
+        origin = request.headers.get("origin", "")
+        allow_origin = "*" if "*" in settings.allowed_origins else (
+            origin if origin in settings.allowed_origins else (
+                settings.allowed_origins[0] if settings.allowed_origins else "*"
+            )
+        )
         headers = {
-            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Origin": allow_origin,
             "Access-Control-Allow-Methods": "*",
             "Access-Control-Allow-Headers": "*",
             "Access-Control-Allow-Credentials": "true",
@@ -49,9 +55,16 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def on_startup() -> None:
+        await create_tables()
         get_engine()
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, get_qdrant_client)
+
+    @app.on_event("shutdown")
+    async def on_shutdown() -> None:
+        from .embeddings import _client
+        if _client is not None:
+            await _client.aclose()
 
     app.include_router(sessions_router.router)
     app.include_router(admin_router.router)

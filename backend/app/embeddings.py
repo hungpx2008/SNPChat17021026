@@ -31,10 +31,7 @@ async def embed_text(text: str) -> list[float]:
             
         return embedding
     except Exception as e:
-        print(f"Error calling Mem0 embedding service: {e}")
+        logging.getLogger(__name__).exception(f"Error calling Mem0 embedding service: {e}")
         # Trong trường hợp service chết hoàn toàn, có thể dùng mock_embed 
         # nhưng tốt nhất là để raise để báo hiệu sự cố hạ tầng.
         raise
-
-
-

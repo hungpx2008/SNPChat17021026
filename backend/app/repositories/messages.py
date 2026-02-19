@@ -52,12 +52,8 @@ class MessageRepository:
         return created_chunks
 
     async def list_messages(self, session_id: UUID, limit: int | None = None) -> list[ChatMessage]:
-        stmt = (
-            select(ChatMessage)
-            .where(ChatMessage.session_id == session_id)
-            .order_by(ChatMessage.created_at.asc())
-        )
         if limit is not None:
+            # Get last N messages (desc) then reverse to chronological order
             stmt = (
                 select(ChatMessage)
                 .where(ChatMessage.session_id == session_id)
@@ -69,5 +65,10 @@ class MessageRepository:
             messages.reverse()
             return messages
 
+        stmt = (
+            select(ChatMessage)
+            .where(ChatMessage.session_id == session_id)
+            .order_by(ChatMessage.created_at.asc())
+        )
         result = await self.session.execute(stmt)
         return list(result.scalars())

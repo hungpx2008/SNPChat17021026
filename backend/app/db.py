@@ -43,3 +43,12 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
     assert SessionLocal is not None  # for mypy
     async with SessionLocal() as session:
         yield session
+
+
+async def create_tables() -> None:
+    """Create all tables if they don't exist (safe for production — uses IF NOT EXISTS)."""
+    if _engine is None:
+        init_engine()
+    assert _engine is not None
+    async with _engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)

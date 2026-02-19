@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any, Iterable
 from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
+from ..db import SessionLocal, init_engine
 from ..embeddings import embed_text, get_client
 from ..qdrant_client import search_vectors, upsert_vectors
 from ..redis_client import get_redis
@@ -18,6 +20,8 @@ from ..schemas import MessageCreate, SearchQuery
 
 import httpx
 from fastapi import BackgroundTasks
+
+logger = logging.getLogger(__name__)
 
 
 class ChatService:
@@ -114,20 +118,28 @@ class ChatService:
         )
 
         # 1. Short-term storage (Short Chunks for RAG)
+        # Use a fresh DB session — the original one is already closed
         @retry(**retry_policy)
         async def safe_chunk_and_store():
-            await self._chunk_and_store(
-                session_id,
-                message_id,
-                content,
-                user_id,
-                department,
-            )
+            if SessionLocal is None:
+                init_engine()
+            assert SessionLocal is not None
+            async with SessionLocal() as bg_session:
+                bg_msg_repo = MessageRepository(bg_session)
+                await self._chunk_and_store(
+                    session_id,
+                    message_id,
+                    content,
+                    user_id,
+                    department,
+                    message_repo=bg_msg_repo,
+                )
+                await bg_session.commit()
 
         try:
             await safe_chunk_and_store()
-        except Exception as e:
-            print(f"Error in background chunking after retries: {e}")
+        except Exception:
+            logger.exception("Error in background chunking after retries")
 
         # 2. Long-term storage (Mem0)
         # Optimization: Only process messages with significant content (> 10 chars)
@@ -146,8 +158,8 @@ class ChatService:
 
             try:
                 await safe_mem0_store()
-            except Exception as e:
-                print(f"Warning: Failed to persist message to Mem0 after retries: {e}")
+            except Exception:
+                logger.warning("Failed to persist message to Mem0 after retries", exc_info=True)
 
     async def semantic_search(self, query: SearchQuery):
         query_vector = await embed_text(query.query)
@@ -222,7 +234,10 @@ class ChatService:
         content: str,
         user_id: str | None,
         department: str | None,
+        *,
+        message_repo: MessageRepository | None = None,
     ) -> None:
+        repo = message_repo or self.message_repo
         chunks = chunk_text(content, self.settings.chat_chunk_size)
         # Process embeddings concurrently
         vectors = await asyncio.gather(*[embed_text(chunk) for chunk in chunks])
@@ -251,7 +266,7 @@ class ChatService:
             (index, chunk, vector_id, {"vector_id": vector_id, "session_id": str(session_id)})
             for index, (chunk, vector_id) in enumerate(zip(chunks, vector_ids))
         ]
-        await self.message_repo.add_chunks(message_id, metadata_chunks)
+        await repo.add_chunks(message_id, metadata_chunks)
 
     def _cache_key(self, session_id: UUID) -> str:
         return f"chat:session:{session_id}"

@@ -5,6 +5,9 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/initdb:/docker-entrypoint-initdb.d
 
   redis:
     image: redis:7-alpine
@@ -44,11 +47,12 @@ services:
       QDRANT_PORT: 6333
       QDRANT_COLLECTION: mem0_memories
       EMBEDDER_PROVIDER: huggingface
-      EMBEDDER_MODEL: thanhtantran/Vietnamese_Embedding_v2
+      EMBEDDER_MODEL: AITeamVN/Vietnamese_Embedding_v2
       EMBEDDING_DIM: 1024
       GRAPH_STORE_PROVIDER: off
       HISTORY_DB_PATH: /app/history/history.db
       HF_HOME: /root/.cache/huggingface
+      HF_TOKEN: ${HF_TOKEN:-}
     ports:
       - "8888:8000"
     volumes:
@@ -76,8 +80,8 @@ services:
       QDRANT_PORT: 6333
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: mem0_memories
-      MEM0_URL: http://chatsnp-mem0:8000
-      CORS_ALLOW_ORIGINS: http://localhost:3000,http://localhost:9002,http://127.0.0.1:9002
+      MEM0_URL: http://mem0:8000
+
       PYTHONUNBUFFERED: "1"
     ports:
       - "8000:8000"

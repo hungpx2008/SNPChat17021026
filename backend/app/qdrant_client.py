@@ -14,9 +14,18 @@ def get_qdrant_client() -> QdrantClient:
     global _client  # noqa: PLW0603
     if _client is None:
         settings = get_settings()
+        grpc_port = None
+        if settings.qdrant_grpc_url:
+            try:
+                grpc_port = int(settings.qdrant_grpc_url)
+            except ValueError:
+                # If it's a URL like "http://qdrant:6334", extract the port
+                from urllib.parse import urlparse
+                parsed = urlparse(settings.qdrant_grpc_url)
+                grpc_port = parsed.port
         _client = QdrantClient(
             url=settings.qdrant_http_url,
-            grpc_port=int(settings.qdrant_grpc_url) if settings.qdrant_grpc_url else None,
+            grpc_port=grpc_port,
         )
         ensure_collections(_client, settings.embedding_dimension)
     return _client

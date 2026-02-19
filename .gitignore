@@ -17,3 +17,4 @@ frontend/.env.local
 # OS files
 .DS_Store
 .env
+mem0-service/history/history.db
