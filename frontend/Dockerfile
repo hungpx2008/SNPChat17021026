@@ -7,6 +7,11 @@ COPY package.json package-lock.json* ./
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 COPY . .
+
+# Next.js inlines NEXT_PUBLIC_* vars at build time, so they must be set before `npm run build`
+ARG NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
+ENV NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL}
+
 RUN npm run build
 
 # Production image, copy all the files and run next

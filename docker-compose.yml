@@ -93,6 +93,11 @@ services:
       MEM0_URL: http://mem0:8000
       CELERY_BROKER_URL: redis://redis:6379/0
       PYTHONUNBUFFERED: "1"
+      # AI Keys (Loaded from .env by docker-compose interpolation)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
     ports:
       - "8000:8000"
     depends_on:
@@ -139,7 +144,12 @@ services:
       QDRANT_URL: http://qdrant:6333
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
+      BACKEND_INTERNAL_URL: http://backend:8000
       PYTHONUNBUFFERED: "1"
+      # AI Keys for RAG
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     depends_on:
       - redis
       - postgres
@@ -160,9 +170,20 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       PYTHONUNBUFFERED: "1"
+      # AI Keys
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      # Qdrant
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      QDRANT_COLLECTION: mem0_memories
     depends_on:
       - redis
       - postgres
+      - qdrant
 
   worker_media:
     build:
@@ -175,11 +196,24 @@ services:
       - ./backend:/app
       - media-data:/app/media # Shared với backend
     environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-chatsnp}:${POSTGRES_PASSWORD:-12345678}@postgres:5432/${POSTGRES_DB:-chatsnp}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      MEM0_URL: http://mem0:8000
+      BACKEND_INTERNAL_URL: http://backend:8000
       PYTHONUNBUFFERED: "1"
+      # AI Keys for RAG
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     depends_on:
       - redis
+      - postgres
+      - qdrant
+      - mem0
 
   # ==========================================================================
   # 📊 MONITORING

@@ -93,3 +93,27 @@ class QdrantCollectionSchema(BaseModel):
 class QdrantPointSchema(BaseModel):
     id: str
     payload: dict[str, Any] | None = None
+
+
+# ---- Document Upload Schemas ----
+
+class DocumentSchema(BaseModel):
+    id: UUID
+    user_id: Optional[str] = None
+    filename: str
+    status: str
+    chunk_count: int = 0
+    extractor_used: Optional[str] = None
+    error_message: Optional[str] = None
+    meta: dict[str, Any] = Field(default_factory=dict, alias="meta")
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class DocumentUploadResponse(BaseModel):
+    document_id: UUID
+    filename: str
+    status: str
+    message: str

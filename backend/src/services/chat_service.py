@@ -85,16 +85,47 @@ class ChatService:
         cache_payload = [self.serialize_message(msg) for msg in all_messages]
         await self.redis.set(cache_key, json.dumps(cache_payload), ex=3600)
 
-        # Offload heavy lifting to background
         # Offload heavy lifting to Celery
-        process_chat_response.delay(
-            session_id=str(session_id),
-            message_id=str(db_message.id),
-            content=message.content,
-            role=message.role,
-            user_id=user_id,
-            department=department,
-        )
+        # Intent Detection: 3 paths — Document (RAG) | SQL (Vanna) | General (LLM)
+        # Priority: Document keywords first (they often overlap with data keywords)
+        
+        # Document/Knowledge keywords (HIGHEST PRIORITY)
+        doc_keywords = [
+            "tài liệu", "quy trình", "biểu phí", "hướng dẫn", "quy định",
+            "file", "văn bản", "trang", "upload", "lưu kho", "kỹ thuật",
+            "biểu giá", "phí", "cẩu", "container", "bãi", "cảng",
+            "quy chế", "nội quy", "hợp đồng", "thông tư", "nghị định",
+        ]
+        is_doc_query = any(kw in message.content.lower() for kw in doc_keywords)
+
+        # SQL/Data keywords (only if NOT a doc query)
+        data_keywords = ["tính", "thống kê", "dữ liệu", "số liệu", "danh sách", "liệt kê", "top", "cao nhất", "thấp nhất"]
+        is_data_query = not is_doc_query and any(kw in message.content.lower() for kw in data_keywords)
+
+        if is_doc_query:
+            from src.worker.tasks import rag_document_search
+            rag_document_search.delay(
+                question=message.content,
+                session_id=str(session_id),
+                user_id=user_id,
+                department=department,
+            )
+        elif is_data_query:
+            from src.worker.tasks import run_sql_query
+            run_sql_query.delay(
+                question=message.content,
+                session_id=str(session_id),
+                user_id=user_id,
+            )
+        else:
+            process_chat_response.delay(
+                session_id=str(session_id),
+                message_id=str(db_message.id),
+                content=message.content,
+                role=message.role,
+                user_id=user_id,
+                department=department,
+            )
 
         # Trigger memory storage if condition met
         if user_id and len(message.content.strip()) > 10:

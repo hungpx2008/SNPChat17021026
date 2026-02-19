@@ -19,8 +19,28 @@ from src.schemas.schemas import (
 )
 from src.core.redis_client import get_redis
 from src.core.qdrant_setup import get_qdrant_client
+from src.core.vanna_setup import vn
+from pydantic import BaseModel
+
+class TrainDDLRequest(BaseModel):
+    ddl: str
+    documentation: str | None = None
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+@router.post("/train/ddl")
+async def train_ddl(payload: TrainDDLRequest):
+    """Train Vanna with DDL statements."""
+    if not vn:
+        # Should return error or handle gracefully
+        return {"status": "error", "message": "Vanna not available"}
+    
+    try:
+        vn.train(ddl=payload.ddl, documentation=payload.documentation)
+        return {"status": "success", "message": "DDL indexed successfully"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 @router.get("/sessions", response_model=list[AdminSessionSummary])

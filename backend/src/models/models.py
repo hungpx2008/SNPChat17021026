@@ -62,3 +62,22 @@ class ChatMessageChunk(Base):
 
     message: Mapped[ChatMessage] = relationship("ChatMessage", back_populates="chunks")
 
+
+class Document(Base):
+    """Tracks uploaded documents and their processing status."""
+    __tablename__ = "documents"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[Optional[str]] = mapped_column(String(255), index=True, nullable=True)
+    filename: Mapped[str] = mapped_column(String(512))
+    file_path: Mapped[str] = mapped_column(String(1024))
+    status: Mapped[str] = mapped_column(String(32), default="processing")  # processing | ready | error
+    chunk_count: Mapped[int] = mapped_column(default=0)
+    extractor_used: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # kreuzberg | docling
+    error_message: Mapped[Optional[str]] = mapped_column(Text(), nullable=True)
+    meta: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
+    )
+

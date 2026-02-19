@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.api import chat as chat_router
 from src.api import admin as admin_router
+from src.api import upload as upload_router
 from src.core.config import get_settings
 from src.core.db import get_engine, create_tables
 from src.core.qdrant_setup import get_qdrant_client
@@ -67,6 +68,7 @@ def create_app() -> FastAPI:
 
     app.include_router(chat_router.router)
     app.include_router(admin_router.router)
+    app.include_router(upload_router.router)
     return app
 
 

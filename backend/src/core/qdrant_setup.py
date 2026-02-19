@@ -47,6 +47,12 @@ def ensure_collections(client: QdrantClient, vector_size: int) -> None:
             vectors_config=qmodels.VectorParams(size=vector_size, distance=qmodels.Distance.COSINE),
         )
 
+    if "port_knowledge" not in existing:
+        client.create_collection(
+            collection_name="port_knowledge",
+            vectors_config=qmodels.VectorParams(size=vector_size, distance=qmodels.Distance.COSINE),
+        )
+
 
 def upsert_vectors(
     collection: str,
