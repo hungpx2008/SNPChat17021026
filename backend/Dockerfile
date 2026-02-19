@@ -12,11 +12,14 @@ RUN apt-get update && apt-get install -y \
 # Copy application code
 COPY . .
 
+# Create media directory for shared volume
+RUN mkdir -p /app/media/charts /app/media/audio /app/media/docs
+
 # Install Python dependencies and application
 RUN pip install --no-cache-dir .
 
 # Expose port
 EXPOSE 8000
 
-# Command to run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Default command: run FastAPI (workers override this in docker-compose)
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

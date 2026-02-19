@@ -1,4 +1,7 @@
 services:
+  # ==========================================================================
+  # 📦 DATA LAYER
+  # ==========================================================================
   postgres:
     image: postgres:16
     container_name: chatsnp-postgres
@@ -31,25 +34,33 @@ services:
     volumes:
       - qdrant-data:/qdrant/storage
 
+  # ==========================================================================
+  # 🧠 AI SERVICES
+  # ==========================================================================
   mem0:
     build:
       context: ./mem0-service
       dockerfile: Dockerfile
     container_name: chatsnp-mem0
     restart: unless-stopped
-
     environment:
-      # Explicitly pass these if they conflict or need overriding
       QDRANT_HOST: qdrant
       QDRANT_PORT: 6333
       QDRANT_COLLECTION: mem0_memories
       EMBEDDER_PROVIDER: huggingface
-      EMBEDDER_MODEL: AITeamVN/Vietnamese_Embedding_v2
+      EMBEDDER_MODEL: ${EMBEDDER_MODEL:-AITeamVN/Vietnamese_Embedding_v2}
       EMBEDDING_DIM: 1024
-      GRAPH_STORE_PROVIDER: off
+      GRAPH_STORE_PROVIDER: "off"
       HISTORY_DB_PATH: /app/history/history.db
       HF_HOME: /root/.cache/huggingface
       HF_TOKEN: ${HF_TOKEN:-}
+      # LLM for memory extraction
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-4o-mini}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
     ports:
       - "8888:8000"
     volumes:
@@ -60,15 +71,18 @@ services:
       qdrant:
         condition: service_started
 
+  # ==========================================================================
+  # 🚀 APPLICATION
+  # ==========================================================================
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: chatsnp-backend
     restart: unless-stopped
-
     volumes:
       - ./backend:/app
+      - media-data:/app/media # Shared với workers
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-chatsnp}:${POSTGRES_PASSWORD:-12345678}@postgres:5432/${POSTGRES_DB:-chatsnp}
       REDIS_URL: redis://redis:6379/0
@@ -77,7 +91,7 @@ services:
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: mem0_memories
       MEM0_URL: http://mem0:8000
-
+      CELERY_BROKER_URL: redis://redis:6379/0
       PYTHONUNBUFFERED: "1"
     ports:
       - "8000:8000"
@@ -93,17 +107,104 @@ services:
       dockerfile: Dockerfile
     container_name: chatsnp-frontend
     restart: unless-stopped
-
     environment:
       NEXT_PUBLIC_BACKEND_URL: http://localhost:8000
       BACKEND_INTERNAL_URL: http://backend:8000
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-openai/gpt-5-nano}
     ports:
       - "3000:3000"
     depends_on:
       - backend
 
+  # ==========================================================================
+  # ⚙️ CELERY WORKERS — 1 Image, 3 Containers
+  # ==========================================================================
+  worker_chat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: chatsnp-worker-chat
+    restart: unless-stopped
+    command: celery -A src.worker.celery_app worker -Q chat_priority -c 2 --loglevel=info -n chat@%h
+    volumes:
+      - ./backend:/app
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-chatsnp}:${POSTGRES_PASSWORD:-12345678}@postgres:5432/${POSTGRES_DB:-chatsnp}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      MEM0_URL: http://mem0:8000
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      - redis
+      - postgres
+      - qdrant
+      - mem0
+
+  worker_data:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: chatsnp-worker-data
+    restart: unless-stopped
+    command: celery -A src.worker.celery_app worker -Q data_batch -c 2 --loglevel=info -n data@%h
+    volumes:
+      - ./backend:/app
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-chatsnp}:${POSTGRES_PASSWORD:-12345678}@postgres:5432/${POSTGRES_DB:-chatsnp}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      - redis
+      - postgres
+
+  worker_media:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: chatsnp-worker-media
+    restart: unless-stopped
+    command: celery -A src.worker.celery_app worker -Q media_process -c 1 --loglevel=info -n media@%h
+    volumes:
+      - ./backend:/app
+      - media-data:/app/media # Shared với backend
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      - redis
+
+  # ==========================================================================
+  # 📊 MONITORING
+  # ==========================================================================
+  flower:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: chatsnp-flower
+    restart: unless-stopped
+    command: celery -A src.worker.celery_app flower --port=5555 --broker_api=redis://redis:6379/0
+    ports:
+      - "5555:5555"
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - redis
+
+# ==========================================================================
+# 💾 VOLUMES
+# ==========================================================================
 volumes:
   postgres-data:
   redis-data:
   qdrant-data:
   huggingface-cache:
+  media-data: # Shared giữa backend + worker_media (charts, audio, docs)
