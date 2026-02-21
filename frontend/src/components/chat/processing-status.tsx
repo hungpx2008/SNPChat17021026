@@ -6,6 +6,12 @@ import { cn } from '@/lib/utils';
 import type { AgentMode } from './chat-composer';
 
 const STATUS_MESSAGES: Record<AgentMode, string[]> = {
+    auto: [
+        'Đang phân loại câu hỏi...',
+        'Đang tìm phương án tốt nhất...',
+        'Đang truy xuất dữ liệu...',
+        'Đang biên soạn câu trả lời...',
+    ],
     sql: [
         'Đang phân tích câu hỏi...',
         'Đang truy vấn cơ sở dữ liệu...',

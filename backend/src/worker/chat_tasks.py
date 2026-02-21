@@ -165,16 +165,41 @@ def rag_document_search(
             embed_resp.raise_for_status()
             query_vector = embed_resp.json()["vector"]
 
-        # 2. Search Qdrant "port_knowledge" — STRICT user isolation
+        # 2. Search Qdrant "port_knowledge" — Department-aware security
         from src.core.qdrant_setup import search_vectors
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+        # Build access filter:
+        #   (user_id == current_user)  → user's own uploads
+        #   OR (department == current_dept AND is_public == true)  → shared dept docs
+        qdrant_filter = None
+        if user_id or department:
+            must_conditions = []
+            should_conditions = []
+
+            if user_id:
+                should_conditions.append(
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id))
+                )
+            if department:
+                # Department-shared public docs
+                should_conditions.append(
+                    Filter(must=[
+                        FieldCondition(key="department", match=MatchValue(value=department)),
+                        FieldCondition(key="is_public", match=MatchValue(value=True)),
+                    ])
+                )
+
+            if should_conditions:
+                qdrant_filter = Filter(should=should_conditions)
 
         results = search_vectors(
             collection="port_knowledge",
             vector=query_vector,
             limit=8,
-            filters={"user_id": user_id} if user_id else None,
+            filters=qdrant_filter,
         )
-        logger.info(f"[RAG] Search (user={user_id}): {len(results)} results")
+        logger.info(f"[RAG] Search (user={user_id}, dept={department}): {len(results)} results")
 
         # Filter by minimum relevance score
         SCORE_THRESHOLD = 0.45

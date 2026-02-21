@@ -66,7 +66,7 @@ export function ChatUI({ department }: { department: string }) {
   const [useInternalData, setUseInternalData] = useState(true);
   const [usePersonalData, setUsePersonalData] = useState(true);
   const [forceDeepScan, setForceDeepScan] = useState(false);
-  const [agentMode, setAgentMode] = useState<AgentMode>("chat");
+  const [agentMode, setAgentMode] = useState<AgentMode>("auto");
   const [error, setError] = useState<string | null>(null);
 
   const formRef = useRef<HTMLFormElement>(null);

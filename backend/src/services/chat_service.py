@@ -84,8 +84,14 @@ class ChatService:
         cache_payload = [self.serialize_message(msg) for msg in all_messages]
         await self.redis.set(cache_key, json.dumps(cache_payload), ex=3600)
 
-        # Explicit Agent Routing — user selects mode, no keyword guessing
-        mode = getattr(message, 'mode', 'chat')
+        # ── Orchestrator Agent: Auto-classify or use explicit mode ──
+        mode = getattr(message, 'mode', 'auto')
+
+        if mode == "auto":
+            # AI auto-classification via OpenRouter + keyword fallback
+            from src.services.router_service import classify_intent
+            mode = await classify_intent(message.content)
+            logger.info(f"[orchestrator] Auto-classified → {mode}")
 
         if mode == "sql":
             from src.worker.tasks import run_sql_query
@@ -102,7 +108,7 @@ class ChatService:
                 user_id=user_id,
                 department=department,
             )
-        else:  # mode == "chat" (default)
+        else:  # mode == "chat" (default fallback)
             process_chat_response.delay(
                 session_id=str(session_id),
                 message_id=str(db_message.id),

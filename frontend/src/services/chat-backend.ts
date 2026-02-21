@@ -153,7 +153,7 @@ export const chatBackend = {
 
   async appendMessage(
     sessionId: string,
-    payload: { role: 'user' | 'assistant' | 'system'; content: string; metadata?: any; mode?: 'chat' | 'sql' | 'rag' },
+    payload: { role: 'user' | 'assistant' | 'system'; content: string; metadata?: any; mode?: 'auto' | 'chat' | 'sql' | 'rag' },
   ): Promise<BackendMessage> {
     return request<BackendMessage>(`/sessions/${sessionId}/messages`, {
       method: 'POST',
