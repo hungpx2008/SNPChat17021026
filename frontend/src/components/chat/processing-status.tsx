@@ -7,21 +7,21 @@ import type { AgentMode } from './chat-composer';
 
 const STATUS_MESSAGES: Record<AgentMode, string[]> = {
     auto: [
-        'Đang phân loại câu hỏi...',
-        'Đang tìm phương án tốt nhất...',
-        'Đang truy xuất dữ liệu...',
-        'Đang biên soạn câu trả lời...',
+        'Đang phân tích yêu cầu...',
+        'Đang lập kế hoạch truy vấn...',
+        'Đang chọn công cụ phù hợp...',
+        'Đang tổng hợp thông tin...',
     ],
     sql: [
-        'Đang phân tích câu hỏi...',
-        'Đang truy vấn cơ sở dữ liệu...',
-        'Đang tổng hợp kết quả...',
-        'Đang biên soạn câu trả lời...',
+        'Đang phân tích câu hỏi số liệu...',
+        'Đang soạn câu lệnh SQL...',
+        'Đang kiểm tra độ chính xác...',
+        'Đang biên soạn báo cáo...',
     ],
     rag: [
         'Đang tìm tài liệu liên quan...',
-        'Đang trích xuất thông tin...',
-        'Đang phân tích nội dung...',
+        'Đang trích xuất dữ liệu...',
+        'Đang kiểm tra tính xác thực...',
         'Đang biên soạn câu trả lời...',
     ],
     chat: [
