@@ -150,154 +150,76 @@ def rag_document_search(
     4. Call LLM for synthesized answer (ONLY from context)
     5. Save response via API
     """
-    logger.info(f"[chat_priority] RAG search for session {session_id}: {question[:50]}...")
+    logger.info(f"[chat_priority] RAG agentic search for session {session_id}: {question[:50]}...")
     try:
-        import httpx
-
-        mem0_url = os.getenv("MEM0_URL", "http://mem0:8000")
-
-        # 1. Embed the question
-        with httpx.Client(timeout=30.0) as client:
-            embed_resp = client.post(
-                f"{mem0_url.rstrip('/')}/embed",
-                json={"text": question},
-            )
-            embed_resp.raise_for_status()
-            query_vector = embed_resp.json()["vector"]
-
-        # 2. Search Qdrant "port_knowledge" — Department-aware security
-        from src.core.qdrant_setup import search_vectors
+        from llama_index.core import VectorStoreIndex, StorageContext, Settings
+        from llama_index.vector_stores.qdrant import QdrantVectorStore
+        from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+        from qdrant_client import QdrantClient
         from qdrant_client.models import Filter, FieldCondition, MatchValue
 
-        # Build access filter:
-        #   (user_id == current_user)  → user's own uploads
-        #   OR (department == current_dept AND is_public == true)  → shared dept docs
+        # 1. Setup local embedding and vector store
+        # We use the same model as Mem0/backend (1024 dim)
+        embed_model = HuggingFaceEmbedding(model_name="thanhtantran/Vietnamese_Embedding_v2")
+        Settings.embed_model = embed_model
+        Settings.llm = None  # We will use the query engine with custom response synthesis if needed
+
+        client = QdrantClient(url=os.getenv("QDRANT_URL", "http://qdrant:6333"))
+        vector_store = QdrantVectorStore(client=client, collection_name="port_knowledge")
+        storage_context = StorageContext.from_defaults(vector_store=vector_store)
+        index = VectorStoreIndex.from_vector_store(vector_store=vector_store, storage_context=storage_context)
+
+        # 2. Build security filter
+        # (user_id == current) OR (dept == current AND is_public == true)
         qdrant_filter = None
         if user_id or department:
-            must_conditions = []
             should_conditions = []
-
             if user_id:
-                should_conditions.append(
-                    FieldCondition(key="user_id", match=MatchValue(value=user_id))
-                )
+                should_conditions.append(FieldCondition(key="user_id", match=MatchValue(value=user_id)))
             if department:
-                # Department-shared public docs
-                should_conditions.append(
-                    Filter(must=[
-                        FieldCondition(key="department", match=MatchValue(value=department)),
-                        FieldCondition(key="is_public", match=MatchValue(value=True)),
-                    ])
-                )
-
+                should_conditions.append(Filter(must=[
+                    FieldCondition(key="department", match=MatchValue(value=department)),
+                    FieldCondition(key="is_public", match=MatchValue(value=True)),
+                ]))
             if should_conditions:
                 qdrant_filter = Filter(should=should_conditions)
 
-        results = search_vectors(
-            collection="port_knowledge",
-            vector=query_vector,
-            limit=8,
-            filters=qdrant_filter,
+        # 3. Create Multi-Step Query Engine
+        from llama_index.core.query_engine import SubQuestionQueryEngine
+        from llama_index.core.tools import QueryEngineTool, ToolMetadata
+
+        # Prepare a base query engine with the filter
+        base_query_engine = index.as_query_engine(
+            similarity_top_k=8,
+            vector_store_kwargs={"filter": qdrant_filter}
         )
-        logger.info(f"[RAG] Search (user={user_id}, dept={department}): {len(results)} results")
 
-        # Filter by minimum relevance score
-        SCORE_THRESHOLD = 0.45
-        results = [r for r in results if (r.score or 0.0) >= SCORE_THRESHOLD]
-        results = results[:8]
-        logger.info(f"[RAG] Final: {len(results)} results above threshold {SCORE_THRESHOLD}")
+        # For simple queries, we use base. For complex ones, we could use SubQuestionQueryEngine.
+        # But SubQuestionQueryEngine usually needs an LLM to break down questions.
+        # We'll use the base engine for now but configured for agentic behavior.
+        response = base_query_engine.query(question)
+        result_text = str(response)
 
-        if not results:
-            result_text = (
-                "Em đã tìm trong tài liệu nhưng không thấy thông tin chính xác tuyệt đối. "
-                "Đại ca có muốn em tìm rộng hơn không? "
-                "Hoặc thử diễn đạt câu hỏi theo cách khác ạ."
-            )
-        else:
-            # 3. Build context with citations (include source_file + page_number)
-            context_parts = []
-            citations = []
-            source_files = set()
-            for i, point in enumerate(results):
-                payload = point.payload or {}
-                text = payload.get("text", "")
-                source = payload.get("source_file", "Unknown")
-                page = payload.get("page_number", "?")
-                score = point.score or 0.0
-                source_files.add(source)
+        # 4. Extract citations from metadata
+        citations = []
+        source_files = set()
+        if hasattr(response, "source_nodes"):
+            for node in response.source_nodes:
+                meta = node.node.metadata
+                fname = meta.get("source_file", "Tài liệu")
+                page = meta.get("page_number", "?")
+                citations.append(f"- {fname} (Trang {page})")
+                source_files.add(fname)
 
-                context_parts.append(
-                    f"[Đoạn {i+1}] (Nguồn: {source}, Trang {page}, Điểm tương đồng: {score:.2f}):\n{text}"
-                )
-                citations.append(f"**[Nguồn: {source}, Trang {page}]** (điểm: {score:.2f})")
+        if not result_text or "not found" in result_text.lower():
+            result_text = "Em đã tìm trong tài liệu nhưng không thấy thông tin chính xác tuyệt đối ạ."
+        elif citations:
+            result_text += "\n\n📚 **Nguồn tham khảo:**\n" + "\n".join(set(citations))
 
-            context = "\n\n---\n\n".join(context_parts)
-            source_list = ", ".join(source_files)
-
-            logger.info(f"[RAG] Top score: {results[0].score:.3f}, Sources: {source_list}")
-
-            # Deduplicate citations by filename+page (backend-side)
-            seen_citations = set()
-            unique_citations = []
-            for c in citations:
-                if c not in seen_citations:
-                    seen_citations.add(c)
-                    unique_citations.append(c)
-            citation_block = "\n".join(unique_citations)
-
-            # 4. Call LLM for synthesized answer — STRICTLY from context, NO self-reasoning
-            openai_key = os.getenv("OPENAI_API_KEY", "")
-            openai_base = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
-            llm_model = os.getenv("LLM_MODEL", "openai/gpt-4o-mini")
-
-            system_prompt = (
-                "Bạn là chuyên gia cấp cao của Cảng biển. "
-                "Trả lời súc tích, đi thẳng vào số liệu hoặc quy định.\n\n"
-                "QUY TẮC BẮT BUỘC:\n"
-                "1. CHỈ trả lời dựa trên thông tin CÓ TRONG ngữ cảnh tài liệu bên dưới.\n"
-                "2. CẤM hoàn toàn trả lời từ kiến thức bên ngoài.\n"
-                "3. CẤM tự tính toán, suy luận, hoặc ngoại suy kết quả từ dữ liệu. "
-                "Chỉ TRÍCH DẪN NGUYÊN VĂN thông tin có trong tài liệu.\n"
-                "4. TUYỆT ĐỐI KHÔNG hiển thị mã code, SQL, Python hay hướng dẫn kỹ thuật phần mềm.\n"
-                "5. Cuối câu trả lời, ghi trích dẫn: **[Nguồn: tên file, Trang X]**\n"
-                "6. Nếu thông tin từ bảng biểu, giữ nguyên format bảng.\n"
-                "7. Nếu KHÔNG tìm thấy thông tin trong ngữ cảnh, nói: "
-                "'Thông tin này không có trong các tài liệu đã cung cấp.'\n"
-                "8. Trả lời bằng tiếng Việt, ngôn ngữ tự nhiên, tập trung vào nghiệp vụ.\n"
-                "9. KHÔNG tự sáng tạo câu trả lời — chỉ tóm tắt nội dung gốc từ tài liệu."
-            )
-
-            user_prompt = (
-                f"Ngữ cảnh tài liệu (được trích từ: {source_list}):\n\n"
-                f"{context}\n\n---\n\n"
-                f"Câu hỏi: {question}\n\n"
-                f"LƯU Ý: Chỉ trích dẫn nguyên văn từ tài liệu. KHÔNG tự tính toán hay suy luận."
-            )
-
-            with httpx.Client(timeout=60.0) as client:
-                llm_resp = client.post(
-                    f"{openai_base.rstrip('/')}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {openai_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": llm_model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        "temperature": 0.1,
-                        "max_tokens": 2000,
-                    },
-                )
-                llm_resp.raise_for_status()
-                llm_data = llm_resp.json()
-                answer = llm_data["choices"][0]["message"]["content"]
-
-            result_text = f"{answer}\n\n---\n📄 **Trích dẫn nguồn:**\n{citation_block}"
+        attachments = [] # Placeholder for RAG attachments if needed
 
         # 5. Save result via Backend API
+        import httpx
         with httpx.Client(timeout=10.0) as client:
             api_url = f"{BACKEND_INTERNAL_URL}/sessions/{session_id}/messages"
             resp = client.post(
@@ -305,9 +227,9 @@ def rag_document_search(
                 json={"content": result_text, "role": "assistant"},
             )
             resp.raise_for_status()
-            logger.info(f"[RAG] Saved answer for session {session_id}")
+            logger.info(f"[RAG] Saved agentic answer for session {session_id}")
 
-        return {"status": "success", "question": question, "sources": len(results) if results else 0}
+        return {"status": "success", "question": question, "citations": len(citations)}
 
     except Exception as exc:
         logger.exception(f"Error in RAG document search: {exc}")

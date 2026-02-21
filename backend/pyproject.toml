@@ -36,6 +36,12 @@ dependencies = [
     "mem0ai",
     "edge-tts",
     "langgraph",
+    # Agentic Frameworks
+    "pydantic-ai[openai]>=0.0.14",
+    "llama-index>=0.11.0",
+    "llama-index-vector-stores-qdrant",
+    "llama-index-embeddings-huggingface",
+    "tavily-python>=0.3.5",
     # Dev/Test
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",

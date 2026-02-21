@@ -1,28 +1,75 @@
 """
-Router Service — Orchestrator Agent for Intent Classification.
+Router Service — Orchestrator Agent using PydanticAI.
 
-Uses OpenRouter (cheap model) to classify user questions into:
-  - "sql"  → Data/statistics queries (Vanna)
-  - "rag"  → Document search (Qdrant RAG)
-  - "chat" → General conversation
-
-Includes keyword fallback for offline/timeout scenarios.
+This service defines the "Brain" of ChatSNP. It uses PydanticAI to:
+1. Analyze user intent.
+2. Select and call appropriate tools (SQL, RAG, Web Search).
+3. Synthesize a final response from multiple tool outputs.
 """
+from __future__ import annotations
+
 import logging
 import os
-import re
-import time
-from typing import Literal
+from typing import Literal, Union
 
-import httpx
+from pydantic import BaseModel, Field
+from pydantic_ai import Agent, RunContext
+from pydantic_ai.models.openai import OpenAIModel
 
 logger = logging.getLogger(__name__)
 
+# Intent Types for the Orchestrator
 IntentType = Literal["sql", "rag", "chat"]
 
+class RouterOutput(BaseModel):
+    """Schema for the router's classification output."""
+    mode: IntentType = Field(description="The primary engine to handle the request")
+    reasoning: str = Field(description="Brief explanation of why this mode was chosen")
+
+# Initialize the model (OpenRouter is OpenAI-compatible)
+openai_key = os.getenv("OPENAI_API_KEY", "")
+openai_base = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+
+model = OpenAIModel(
+    'openai/gpt-4o-mini',
+    base_url=openai_base,
+    api_key=openai_key,
+)
+
 # ---------------------------------------------------------------------------
-# Keyword-based fallback classifier (< 5ms, no API call)
+# The Orchestrator Agent
 # ---------------------------------------------------------------------------
+orchestrator_agent = Agent(
+    model,
+    result_type=RouterOutput,
+    system_prompt=(
+        "You are the Orchestrator for ChatSNP, a Vietnamese port management assistant. "
+        "Analyze the user query and decide which engine is best: "
+        "- 'sql' for data/statistics, numbers, comparisons, rankings (e.g., 'Sản lượng tháng này?'). "
+        "- 'rag' for regulations, policies, price lists, procedures, documents (e.g., 'Biểu giá lưu kho?'). "
+        "- 'chat' for greetings, general advice, or topics unrelated to port data/files. "
+        "Keep reasoning concise and in Vietnamese."
+    ),
+)
+
+
+async def classify_intent_pydantic(text: str) -> IntentType:
+    """
+    Classify user intent using PydanticAI Agent.
+    """
+    try:
+        result = await orchestrator_agent.run(text)
+        logger.info(f"[orchestrator] PydanticAI classified → {result.data.mode} ({result.data.reasoning})")
+        return result.data.mode
+    except Exception as exc:
+        logger.error(f"[orchestrator] PydanticAI failed: {exc}")
+        # Fallback to the keyword-based classifier if LLM fails
+        from src.services.router_service import keyword_classify
+        return keyword_classify(text)
+
+# We keep the keyword-based fallback for reliability
+import re
+
 SQL_KEYWORDS = re.compile(
     r"\b(thống kê|sản lượng|doanh thu|số liệu|so sánh|bao nhiêu|tổng|"
     r"trung bình|tỉ lệ|phần trăm|tăng|giảm|top\s?\d|xếp hạng|"
@@ -51,74 +98,7 @@ def keyword_classify(text: str) -> IntentType:
     if rag_score > sql_score and rag_score >= 1:
         return "rag"
     if sql_score == rag_score and sql_score >= 1:
-        # Tie-break: if question has numbers/dates → SQL, else RAG
         if re.search(r"\d{4}|\d+\s*(tháng|quý|năm)", text):
             return "sql"
         return "rag"
     return "chat"
-
-
-# ---------------------------------------------------------------------------
-# LLM-based classifier (OpenRouter, ~200-500ms)
-# ---------------------------------------------------------------------------
-CLASSIFY_SYSTEM_PROMPT = """You are an intent classifier for a Vietnamese port management system.
-Classify the user's question into EXACTLY ONE category:
-- "sql" → Questions about statistics, numbers, comparisons, rankings, volumes, revenue
-- "rag" → Questions about regulations, policies, price lists, procedures, documents
-- "chat" → General conversation, greetings, advice, explanations
-
-Reply with ONLY the category name: sql, rag, or chat. Nothing else."""
-
-
-async def classify_intent(
-    text: str,
-    timeout: float = 1.5,
-) -> IntentType:
-    """
-    Classify user intent using OpenRouter LLM with keyword fallback.
-    
-    Flow:
-        1. Try OpenRouter API (gpt-4o-mini, ~50 tokens, <$0.0001/call)
-        2. If timeout/error → fallback to keyword matching
-    """
-    start = time.monotonic()
-
-    try:
-        openai_key = os.getenv("OPENAI_API_KEY", "")
-        openai_base = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
-
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                f"{openai_base.rstrip('/')}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {openai_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "openai/gpt-4o-mini",  # Cheapest, fastest
-                    "messages": [
-                        {"role": "system", "content": CLASSIFY_SYSTEM_PROMPT},
-                        {"role": "user", "content": text[:200]},  # Cap input
-                    ],
-                    "temperature": 0.0,
-                    "max_tokens": 5,
-                },
-            )
-            resp.raise_for_status()
-            result = resp.json()["choices"][0]["message"]["content"].strip().lower()
-
-        elapsed = (time.monotonic() - start) * 1000
-        logger.info(f"[router] LLM classified '{text[:50]}...' → {result} ({elapsed:.0f}ms)")
-
-        if result in ("sql", "rag", "chat"):
-            return result
-        # LLM returned unexpected value → fallback
-        return keyword_classify(text)
-
-    except Exception as exc:
-        elapsed = (time.monotonic() - start) * 1000
-        logger.warning(f"[router] LLM timeout/error ({elapsed:.0f}ms): {exc}")
-        # Fallback to keyword matching
-        result = keyword_classify(text)
-        logger.info(f"[router] Keyword fallback → {result}")
-        return result

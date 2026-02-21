@@ -88,9 +88,9 @@ class ChatService:
         mode = getattr(message, 'mode', 'auto')
 
         if mode == "auto":
-            # AI auto-classification via OpenRouter + keyword fallback
-            from src.services.router_service import classify_intent
-            mode = await classify_intent(message.content)
+            # AI auto-classification via PydanticAI Agent
+            from src.services.router_service import classify_intent_pydantic
+            mode = await classify_intent_pydantic(message.content)
             logger.info(f"[orchestrator] Auto-classified → {mode}")
 
         if mode == "sql":
