@@ -32,26 +32,23 @@ def get_qdrant_client() -> QdrantClient:
 
 
 def ensure_collections(client: QdrantClient, vector_size: int) -> None:
+    """Ensure all required Qdrant collections exist with correct vector dimensions.
+    
+    Collections (all use Vietnamese_Embedding_v2, 1024 dim):
+      - chat_chunks: short-term chat message embeddings
+      - port_knowledge: uploaded document chunks (RAG)
+      - vanna_schemas_openai: Vanna SQL schema embeddings
+      - mem0_memories: managed by Mem0 SDK (created automatically)
+    """
     collections = client.get_collections().collections
     existing = {collection.name for collection in collections}
 
-    if "chat_chunks" not in existing:
-        client.create_collection(
-            collection_name="chat_chunks",
-            vectors_config=qmodels.VectorParams(size=vector_size, distance=qmodels.Distance.COSINE),
-        )
-
-    if "long_term_memory" not in existing:
-        client.create_collection(
-            collection_name="long_term_memory",
-            vectors_config=qmodels.VectorParams(size=vector_size, distance=qmodels.Distance.COSINE),
-        )
-
-    if "port_knowledge" not in existing:
-        client.create_collection(
-            collection_name="port_knowledge",
-            vectors_config=qmodels.VectorParams(size=vector_size, distance=qmodels.Distance.COSINE),
-        )
+    for name in ("chat_chunks", "port_knowledge", "vanna_schemas_openai"):
+        if name not in existing:
+            client.create_collection(
+                collection_name=name,
+                vectors_config=qmodels.VectorParams(size=vector_size, distance=qmodels.Distance.COSINE),
+            )
 
 
 def upsert_vectors(

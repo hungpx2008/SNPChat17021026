@@ -21,5 +21,6 @@ RUN pip install --no-cache-dir .
 # Expose port
 EXPOSE 8000
 
-# Default command: run FastAPI (workers override this in docker-compose)
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Production command: no --reload, multi-worker
+# Workers override this in docker-compose
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

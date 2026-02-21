@@ -19,6 +19,7 @@ class ChatSession(Base):
     user_id: Mapped[Optional[str]] = mapped_column(String(255), index=True, nullable=True)
     department: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    meta: Mapped[dict] = mapped_column("metadata", JSON, default=dict)  # {"summary": "...", "message_count_at_summary": N}
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
@@ -71,7 +72,7 @@ class Document(Base):
     user_id: Mapped[Optional[str]] = mapped_column(String(255), index=True, nullable=True)
     filename: Mapped[str] = mapped_column(String(512))
     file_path: Mapped[str] = mapped_column(String(1024))
-    status: Mapped[str] = mapped_column(String(32), default="processing")  # processing | ready | error
+    status: Mapped[str] = mapped_column(String(32), default="processing")  # processing | awaiting_choice | ready | error
     chunk_count: Mapped[int] = mapped_column(default=0)
     extractor_used: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)  # kreuzberg | docling
     error_message: Mapped[Optional[str]] = mapped_column(Text(), nullable=True)
@@ -81,3 +82,15 @@ class Document(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc)
     )
 
+
+class MessageFeedback(Base):
+    """User feedback on bot messages for self-correction."""
+    __tablename__ = "message_feedbacks"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    message_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("chat_messages.id", ondelete="CASCADE"), index=True
+    )
+    is_liked: Mapped[bool] = mapped_column()
+    reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

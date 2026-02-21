@@ -1,9 +1,15 @@
 import type { ReactNode } from "react";
+import type { Attachment } from "@/services/chat-backend";
 
 export interface Message {
   id: number;
   role: "user" | "bot";
   content: string | ReactNode;
+  backendId?: string;
+  metadata?: {
+    attachments?: Attachment[];
+    [key: string]: any;
+  };
 }
 
 export interface ChatSession {

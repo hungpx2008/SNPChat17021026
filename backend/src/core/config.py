@@ -16,7 +16,6 @@ class Settings(BaseSettings):
     embedding_device: str = Field("cpu", alias="EMBEDDING_DEVICE")
     chat_max_sessions: int = Field(100, alias="CHAT_MAX_SESSIONS")
     chat_cache_window: int = Field(20, alias="CHAT_CACHE_WINDOW")
-    chat_cache_window: int = Field(20, alias="CHAT_CACHE_WINDOW")
     chat_chunk_size: int = Field(512, alias="CHAT_CHUNK_SIZE")
     
     # LLM Keys

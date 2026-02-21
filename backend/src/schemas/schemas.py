@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field, ConfigDict
@@ -9,6 +9,7 @@ class MessageCreate(BaseModel):
     role: str
     content: str
     metadata: dict[str, Any] | None = None
+    mode: Literal["chat", "sql", "rag"] = "chat"
 
 
 class MessageChunkSchema(BaseModel):
@@ -94,8 +95,13 @@ class QdrantPointSchema(BaseModel):
     id: str
     payload: dict[str, Any] | None = None
 
-
 # ---- Document Upload Schemas ----
+
+class Attachment(BaseModel):
+    """Media attachment in Omni-channel response."""
+    type: str  # "chart" | "audio" | "document"
+    url: str
+    filename: Optional[str] = None
 
 class DocumentSchema(BaseModel):
     id: UUID

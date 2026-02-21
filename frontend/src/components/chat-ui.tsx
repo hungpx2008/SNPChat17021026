@@ -16,10 +16,11 @@ import { useAuth } from "./auth-provider";
 import { useLanguage } from "./language-provider";
 import { SidebarInset, useSidebar } from "./ui/sidebar";
 import { AttachmentPreview } from "./chat/attachment-preview";
-import { ChatComposer } from "./chat/chat-composer";
+import { ChatComposer, type AgentMode } from "./chat/chat-composer";
 import { ChatHeader } from "./chat/chat-header";
 import { ChatMessageList } from "./chat/chat-message-list";
 import { ChatSidebar } from "./chat/chat-sidebar";
+import { ProcessingStatus } from "./chat/processing-status";
 import type { AttachedFile, ChatSession, Message } from "./chat/types";
 import { chatBackend, type BackendMessage, type SearchResult } from "../services/chat-backend";
 
@@ -40,7 +41,7 @@ export function ChatUI({ department }: { department: string }) {
       return generated;
     }
     return "guest-user";
-  }, [user?.uid, user?.email]);
+  }, [user?.id, user?.email]);
 
   const welcomeMessage = useCallback(
     (): Message => ({
@@ -64,6 +65,8 @@ export function ChatUI({ department }: { department: string }) {
   const [attachedFile, setAttachedFile] = useState<AttachedFile | null>(null);
   const [useInternalData, setUseInternalData] = useState(true);
   const [usePersonalData, setUsePersonalData] = useState(true);
+  const [forceDeepScan, setForceDeepScan] = useState(false);
+  const [agentMode, setAgentMode] = useState<AgentMode>("chat");
   const [error, setError] = useState<string | null>(null);
 
   const formRef = useRef<HTMLFormElement>(null);
@@ -89,11 +92,13 @@ export function ChatUI({ department }: { department: string }) {
 
   const mapBackendMessage = useCallback(
     (message: BackendMessage): Message => {
-      const meta = (message.metadata ?? {}) as { attachment?: AttachedFile | null };
+      const meta = (message.metadata ?? {}) as { attachment?: AttachedFile | null; attachments?: any[] };
       if (meta?.attachment) {
         return {
           id: new Date(message.created_at).getTime(),
           role: message.role === "assistant" ? "bot" : "user",
+          backendId: message.id,
+          metadata: { attachments: meta.attachments || [] },
           content: (
             <div>
               <AttachmentPreview file={meta.attachment} size="lg" />
@@ -106,6 +111,8 @@ export function ChatUI({ department }: { department: string }) {
       return {
         id: new Date(message.created_at).getTime(),
         role: message.role === "assistant" ? "bot" : "user",
+        backendId: message.id,
+        metadata: { attachments: meta.attachments || [] },
         content: message.content,
       };
     },
@@ -226,10 +233,14 @@ export function ChatUI({ department }: { department: string }) {
         id: Date.now() + 1,
         role: "bot",
         content: (
-          <div className="flex items-center gap-2">
-            <LoaderCircle className="animate-spin h-5 w-5" />
-            <span>{t("thinkingMessage")}</span>
-          </div>
+          agentMode === "chat" ? (
+            <div className="flex items-center gap-2">
+              <LoaderCircle className="animate-spin h-5 w-5" />
+              <span>{t("thinkingMessage")}</span>
+            </div>
+          ) : (
+            <ProcessingStatus mode={agentMode} />
+          )
         ),
       };
 
@@ -238,13 +249,13 @@ export function ChatUI({ department }: { department: string }) {
         prev.map((chat) =>
           chat.id === sessionId
             ? {
-                ...chat,
-                title:
-                  chat.title && chat.title !== t("newChatTooltip")
-                    ? chat.title
-                    : sessionTitle ?? chat.title,
-                messages: [...chat.messages, userMessage],
-              }
+              ...chat,
+              title:
+                chat.title && chat.title !== t("newChatTooltip")
+                  ? chat.title
+                  : sessionTitle ?? chat.title,
+              messages: [...chat.messages, userMessage],
+            }
             : chat,
         ),
       );
@@ -258,28 +269,53 @@ export function ChatUI({ department }: { department: string }) {
       setAttachedFile(null);
 
       try {
-        await chatBackend.appendMessage(sessionId, {
+        const appendResult = await chatBackend.appendMessage(sessionId, {
           role: "user",
           content: userInput,
           metadata: fileToSend ? { attachment: fileToSend } : undefined,
+          mode: agentMode,
         });
 
-        const llmResult = await getHelp({
-          question: userInput,
-          department,
-          sessionId,
-          userId: userIdentifier,
-          photoDataUri: fileToSend?.dataUri,
-        });
-        const botResponse = llmResult.response;
+        // Check if backend dispatched a Celery task (SQL/RAG)
+        const taskDispatched = (appendResult as any).task_dispatched === true;
 
-        await chatBackend.appendMessage(sessionId, {
-          role: "assistant",
-          content: botResponse,
-          metadata: llmResult.usage ? { usage: llmResult.usage } : undefined,
-        });
+        if (taskDispatched) {
+          // Poll for Celery result instead of calling getHelp()
+          const maxAttempts = 30; // 30 * 2s = 60s max wait
+          let found = false;
+          for (let i = 0; i < maxAttempts; i++) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            try {
+              const session = await chatBackend.fetchSession(sessionId, { limit: 5 });
+              const lastMsg = session.messages?.[session.messages.length - 1];
+              if (lastMsg && lastMsg.role === 'assistant') {
+                found = true;
+                break;
+              }
+            } catch {
+              // ignore polling errors
+            }
+          }
+          await loadSessionMessages(sessionId);
+        } else {
+          // General query: use getHelp() server action
+          const llmResult = await getHelp({
+            question: userInput,
+            department,
+            sessionId,
+            userId: userIdentifier,
+            photoDataUri: fileToSend?.dataUri,
+          });
+          const botResponse = llmResult.response;
 
-        await loadSessionMessages(sessionId);
+          await chatBackend.appendMessage(sessionId, {
+            role: "assistant",
+            content: botResponse,
+            metadata: llmResult.usage ? { usage: llmResult.usage } : undefined,
+          });
+
+          await loadSessionMessages(sessionId);
+        }
         return true;
       } catch (err) {
         console.error("Failed to send message", err);
@@ -292,6 +328,7 @@ export function ChatUI({ department }: { department: string }) {
     },
     [
       activeChatId,
+      agentMode,
       attachedFile,
       department,
       loadSessionMessages,
@@ -305,12 +342,66 @@ export function ChatUI({ department }: { department: string }) {
     fileInputRef.current?.click();
   };
 
-  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) {
       return;
     }
 
+    // Check if it's a document to upload to Knowledge Engine
+    const docExtensions = ['.pdf', '.doc', '.docx', '.xlsx', '.pptx', '.txt'];
+    const isDocument = docExtensions.some(ext => file.name.toLowerCase().endsWith(ext));
+
+    if (isDocument && file.size > 0) {
+      // Upload to backend Knowledge Engine
+      try {
+        setError(null);
+        const result = await chatBackend.uploadDocument(file, userIdentifier, forceDeepScan);
+        // Show success in chat
+        const uploadMessage: Message = {
+          id: Date.now(),
+          role: "bot",
+          content: `📄 Đã upload file **${result.filename}** — đang xử lý...\nID: \`${result.document_id}\``,
+        };
+        setMessages(prev => [...prev, uploadMessage]);
+      } catch (err: any) {
+        // Handle 409 Conflict (duplicate file) — ask user to overwrite
+        const errMsg = err?.message || '';
+        if (errMsg.includes('409')) {
+          try {
+            const detail = JSON.parse(errMsg.replace(/^.*?409\s*/, ''));
+            const shouldOverwrite = confirm(
+              `${detail.message}\n\nNhấn OK để ghi đè, Cancel để hủy.`
+            );
+            if (shouldOverwrite) {
+              const result = await chatBackend.uploadDocument(file, userIdentifier, forceDeepScan, true);
+              const uploadMessage: Message = {
+                id: Date.now(),
+                role: "bot",
+                content: `📄 Đã ghi đè file **${result.filename}** — đang xử lý lại...\nID: \`${result.document_id}\``,
+              };
+              setMessages(prev => [...prev, uploadMessage]);
+            } else {
+              setMessages(prev => [...prev, {
+                id: Date.now(),
+                role: "bot",
+                content: "❌ Đã hủy upload.",
+              }]);
+            }
+          } catch {
+            setError(`Upload thất bại: ${errMsg}`);
+          }
+        } else {
+          console.error('Upload failed:', err);
+          setError(`Upload thất bại: ${errMsg}`);
+        }
+      }
+      // Reset file input
+      if (event.target) event.target.value = '';
+      return;
+    }
+
+    // For images — keep the old dataUri behavior
     const reader = new FileReader();
     reader.onloadend = () => {
       setAttachedFile({
@@ -404,6 +495,11 @@ export function ChatUI({ department }: { department: string }) {
         userEmail={user?.email ?? ""}
         t={t as any}
         loading={sessionsLoading}
+        userId={userIdentifier}
+        onAskAboutDocument={(filename) => {
+          setInput(`Hãy tóm tắt nội dung file ${filename}`);
+          textareaRef.current?.focus();
+        }}
       />
       <SidebarInset className="flex flex-col h-screen">
         <ChatHeader
@@ -442,6 +538,8 @@ export function ChatUI({ department }: { department: string }) {
           onSubmit={handleFormSubmit}
           submitting={submitting}
           t={t as any}
+          selectedMode={agentMode}
+          onModeChange={setAgentMode}
         />
       </SidebarInset>
     </>

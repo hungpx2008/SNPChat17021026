@@ -1,5 +1,7 @@
 'use client';
 
+import { useState } from 'react';
+
 import type { ChangeEvent, KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,14 +33,16 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { LoaderCircle, LogOut, PlusSquare, Search, Trash2, User } from "lucide-react";
+import { LoaderCircle, LogOut, PlusSquare, Search, Trash2, User, FileText, MessageCircle } from "lucide-react";
 import type { ChatSession } from "./types";
+import { DocumentSidebar } from "./document-sidebar";
 
 type TranslateFn = (key: string) => string;
 
 interface ChatSearchResult {
   text: string;
   score: number;
+  source: string;
   metadata: Record<string, any>;
 }
 
@@ -58,6 +62,8 @@ interface ChatSidebarProps {
   userEmail?: string | null;
   t: TranslateFn;
   loading?: boolean;
+  userId?: string;
+  onAskAboutDocument?: (filename: string) => void;
 }
 
 export function ChatSidebar({
@@ -76,7 +82,10 @@ export function ChatSidebar({
   userEmail,
   t,
   loading,
+  userId,
+  onAskAboutDocument,
 }: ChatSidebarProps) {
+  const [activeTab, setActiveTab] = useState<'chat' | 'docs'>('chat');
   const filteredHistory = chats.filter((chat) =>
     chat.title.toLowerCase().includes(searchTerm.toLowerCase()),
   );
@@ -152,53 +161,89 @@ export function ChatSidebar({
         )}
       </SidebarHeader>
       <SidebarContent>
-        <SidebarMenu>
-          {loading && (
-            <SidebarMenuItem>
-              <div className="px-2 py-4 text-sm text-muted-foreground">
-                {t("thinkingMessage")}
-              </div>
-            </SidebarMenuItem>
-          )}
-          {!loading && filteredHistory.map((chat) => (
-            <SidebarMenuItem key={chat.id}>
-              <SidebarMenuButton
-                tooltip={chat.title}
-                size="sm"
-                className="w-full justify-start"
-                isActive={chat.id === activeChatId}
-                onClick={() => onSelectChat(chat.id)}
-              >
-                <span className="truncate flex-1 text-left">{chat.title}</span>
-              </SidebarMenuButton>
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6 opacity-0 group-hover:opacity-100"
-                  >
-                    <Trash2 size={16} />
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>{t("deleteChatTitle")}</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      {t("deleteChatDescription")}
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>{t("cancelButton")}</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => onDeleteChat(chat.id)}>
-                      {t("continueButton")}
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            </SidebarMenuItem>
-          ))}
-        </SidebarMenu>
+        {/* Tab Bar */}
+        <div className="flex border-b px-2">
+          <button
+            className={`flex-1 py-2 text-xs font-medium flex items-center justify-center gap-1 border-b-2 transition-colors ${activeTab === 'chat'
+              ? 'border-primary text-primary'
+              : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            onClick={() => setActiveTab('chat')}
+          >
+            <MessageCircle size={14} />
+            Chat
+          </button>
+          <button
+            className={`flex-1 py-2 text-xs font-medium flex items-center justify-center gap-1 border-b-2 transition-colors ${activeTab === 'docs'
+              ? 'border-primary text-primary'
+              : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            onClick={() => setActiveTab('docs')}
+          >
+            <FileText size={14} />
+            Tài liệu
+          </button>
+        </div>
+
+        {/* Chat Tab */}
+        {activeTab === 'chat' && (
+          <SidebarMenu>
+            {loading && (
+              <SidebarMenuItem>
+                <div className="px-2 py-4 text-sm text-muted-foreground">
+                  {t("thinkingMessage")}
+                </div>
+              </SidebarMenuItem>
+            )}
+            {!loading && filteredHistory.map((chat) => (
+              <SidebarMenuItem key={chat.id}>
+                <SidebarMenuButton
+                  tooltip={chat.title}
+                  size="sm"
+                  className="w-full justify-start"
+                  isActive={chat.id === activeChatId}
+                  onClick={() => onSelectChat(chat.id)}
+                >
+                  <span className="truncate flex-1 text-left">{chat.title}</span>
+                </SidebarMenuButton>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6 opacity-0 group-hover:opacity-100"
+                    >
+                      <Trash2 size={16} />
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>{t("deleteChatTitle")}</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        {t("deleteChatDescription")}
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>{t("cancelButton")}</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => onDeleteChat(chat.id)}>
+                        {t("continueButton")}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </SidebarMenuItem>
+            ))}
+          </SidebarMenu>
+        )}
+
+        {/* Document Tab */}
+        {activeTab === 'docs' && (
+          <DocumentSidebar
+            userId={userId || ''}
+            onAskAboutDocument={onAskAboutDocument || (() => { })}
+            visible={activeTab === 'docs'}
+          />
+        )}
       </SidebarContent>
       <SidebarFooter>
         <div className="flex items-center gap-2 p-2">

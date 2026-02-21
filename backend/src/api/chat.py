@@ -71,7 +71,7 @@ async def get_session(
     }
 
 
-@router.post("/{session_id}/messages", response_model=MessageSchema, status_code=201)
+@router.post("/{session_id}/messages", status_code=201)
 async def add_message(
     session_id: UUID,
     payload: MessageCreate,
@@ -86,7 +86,12 @@ async def add_message(
         department=db_session.department,
     )
     await db.commit()
-    return service.serialize_message(message)
+    result = service.serialize_message(message)
+    # Signal frontend about dispatched Celery tasks
+    intent_type = getattr(message, '_intent_type', 'chat')
+    result['task_dispatched'] = intent_type in ('sql', 'rag')
+    result['intent_type'] = intent_type
+    return result
 
 
 @router.post("/search", response_model=list[SearchResult])

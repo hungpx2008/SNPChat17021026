@@ -19,7 +19,6 @@ from src.schemas.schemas import MessageCreate, SearchQuery
 
 
 import httpx
-import httpx
 from src.worker.tasks import process_chat_response, store_memory
 
 logger = logging.getLogger(__name__)
@@ -85,24 +84,17 @@ class ChatService:
         cache_payload = [self.serialize_message(msg) for msg in all_messages]
         await self.redis.set(cache_key, json.dumps(cache_payload), ex=3600)
 
-        # Offload heavy lifting to Celery
-        # Intent Detection: 3 paths — Document (RAG) | SQL (Vanna) | General (LLM)
-        # Priority: Document keywords first (they often overlap with data keywords)
-        
-        # Document/Knowledge keywords (HIGHEST PRIORITY)
-        doc_keywords = [
-            "tài liệu", "quy trình", "biểu phí", "hướng dẫn", "quy định",
-            "file", "văn bản", "trang", "upload", "lưu kho", "kỹ thuật",
-            "biểu giá", "phí", "cẩu", "container", "bãi", "cảng",
-            "quy chế", "nội quy", "hợp đồng", "thông tư", "nghị định",
-        ]
-        is_doc_query = any(kw in message.content.lower() for kw in doc_keywords)
+        # Explicit Agent Routing — user selects mode, no keyword guessing
+        mode = getattr(message, 'mode', 'chat')
 
-        # SQL/Data keywords (only if NOT a doc query)
-        data_keywords = ["tính", "thống kê", "dữ liệu", "số liệu", "danh sách", "liệt kê", "top", "cao nhất", "thấp nhất"]
-        is_data_query = not is_doc_query and any(kw in message.content.lower() for kw in data_keywords)
-
-        if is_doc_query:
+        if mode == "sql":
+            from src.worker.tasks import run_sql_query
+            run_sql_query.delay(
+                question=message.content,
+                session_id=str(session_id),
+                user_id=user_id,
+            )
+        elif mode == "rag":
             from src.worker.tasks import rag_document_search
             rag_document_search.delay(
                 question=message.content,
@@ -110,14 +102,7 @@ class ChatService:
                 user_id=user_id,
                 department=department,
             )
-        elif is_data_query:
-            from src.worker.tasks import run_sql_query
-            run_sql_query.delay(
-                question=message.content,
-                session_id=str(session_id),
-                user_id=user_id,
-            )
-        else:
+        else:  # mode == "chat" (default)
             process_chat_response.delay(
                 session_id=str(session_id),
                 message_id=str(db_message.id),
@@ -137,70 +122,19 @@ class ChatService:
                 department=department,
             )
 
+        # Trigger async summary every 10 messages (runs in background)
+        msg_count = len(all_messages)
+        if msg_count > 0 and msg_count % 10 == 0:
+            from src.worker.tasks import summarize_session_history
+            summarize_session_history.delay(session_id=str(session_id))
+
+        # Return message + mode so API can signal frontend
+        db_message._intent_type = mode
         return db_message
 
-    async def _process_message_background(
-        self,
-        session_id: UUID,
-        message_id: UUID,
-        content: str,
-        role: str,
-        user_id: str | None,
-        department: str | None,
-    ):
-        from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-
-        # Define retry policy: Wait 1s, 2s, 4s... up to 10s. Stop after 3 attempts.
-        retry_policy = dict(
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=1, min=1, max=10),
-            retry=retry_if_exception_type(Exception),
-            reraise=True
-        )
-
-        # 1. Short-term storage (Short Chunks for RAG)
-        # Use a fresh DB session — the original one is already closed
-        @retry(**retry_policy)
-        async def safe_chunk_and_store():
-            if SessionLocal is None:
-                init_engine()
-            assert SessionLocal is not None
-            async with SessionLocal() as bg_session:
-                bg_msg_repo = MessageRepository(bg_session)
-                await self._chunk_and_store(
-                    session_id,
-                    message_id,
-                    content,
-                    user_id,
-                    department,
-                    message_repo=bg_msg_repo,
-                )
-                await bg_session.commit()
-
-        try:
-            await safe_chunk_and_store()
-        except Exception:
-            logger.exception("Error in background chunking after retries")
-
-        # 2. Long-term storage (Mem0)
-        # Optimization: Only process messages with significant content (> 10 chars)
-        if user_id and len(content.strip()) > 10:
-            @retry(**retry_policy)
-            async def safe_mem0_store():
-                client = get_client()
-                await client.post(
-                    f"{self.settings.mem0_url.rstrip('/')}/memories",
-                    json={
-                        "user_id": user_id,
-                        "messages": [{"role": role, "content": content}],
-                        "metadata": {"session_id": str(session_id), "department": department}
-                    }
-                )
-
-            try:
-                await safe_mem0_store()
-            except Exception:
-                logger.warning("Failed to persist message to Mem0 after retries", exc_info=True)
+    # NOTE: _process_message_background and _chunk_and_store have been
+    # migrated to Celery worker tasks (process_chat_response in tasks.py).
+    # They are no longer needed here.
 
     async def semantic_search(self, query: SearchQuery):
         query_vector = await embed_text(query.query)
@@ -236,7 +170,7 @@ class ChatService:
                     data = resp.json()
                     return data.get("results", [])
             except Exception as e:
-                print(f"Warning: Mem0 search failed: {e}")
+                logger.warning(f"Mem0 search failed: {e}")
             return []
 
         # Run searches in parallel
@@ -265,49 +199,13 @@ class ChatService:
             ]
 
         combined = convert_qdrant(chunk_results) + convert_mem0(mem0_results)
+        # Filter by minimum score threshold (unified across sources)
+        SCORE_THRESHOLD = 0.45
+        combined = [item for item in combined if item["score"] >= SCORE_THRESHOLD]
         combined.sort(key=lambda item: item["score"], reverse=True)
         return combined[: query.limit]
 
-    async def _chunk_and_store(
-        self,
-        session_id: UUID,
-        message_id: UUID,
-        content: str,
-        user_id: str | None,
-        department: str | None,
-        *,
-        message_repo: MessageRepository | None = None,
-    ) -> None:
-        repo = message_repo or self.message_repo
-        chunks = chunk_text(content, self.settings.chat_chunk_size)
-        # Process embeddings concurrently
-        vectors = await asyncio.gather(*[embed_text(chunk) for chunk in chunks])
-        
-        payloads = []
-        vector_ids = []
-        for index, (chunk, vector) in enumerate(zip(chunks, vectors)):
-            vector_id = str(uuid4())
-            payloads.append(
-                {
-                    "session_id": str(session_id),
-                    "message_id": str(message_id),
-                    "chunk_index": index,
-                    "text": chunk,
-                    "user_id": user_id,
-                    "department": department,
-                    "type": "message_chunk",
-                }
-            )
-            vector_ids.append(vector_id)
 
-        if payloads:
-            upsert_vectors("chat_chunks", payloads, vectors, ids=vector_ids)
-
-        metadata_chunks = [
-            (index, chunk, vector_id, {"vector_id": vector_id, "session_id": str(session_id)})
-            for index, (chunk, vector_id) in enumerate(zip(chunks, vector_ids))
-        ]
-        await repo.add_chunks(message_id, metadata_chunks)
 
     def _cache_key(self, session_id: UUID) -> str:
         return f"chat:session:{session_id}"

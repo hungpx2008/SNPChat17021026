@@ -80,6 +80,7 @@ export interface BackendSession {
   user_id: string | null;
   department: string | null;
   title: string | null;
+  metadata?: Record<string, unknown>;  // includes summary, message_count_at_summary
   created_at: string;
   updated_at: string;
 }
@@ -106,6 +107,23 @@ export interface SearchResult {
   score: number;
   source: string;
   metadata: Record<string, any>;
+}
+
+export interface DocumentInfo {
+  id: string;
+  filename: string;
+  status: 'processing' | 'awaiting_choice' | 'ready' | 'error';
+  chunk_count: number;
+  extractor_used: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Attachment {
+  type: 'chart' | 'audio' | 'document';
+  url: string;
+  filename?: string;
 }
 
 export const chatBackend = {
@@ -135,7 +153,7 @@ export const chatBackend = {
 
   async appendMessage(
     sessionId: string,
-    payload: { role: 'user' | 'assistant' | 'system'; content: string; metadata?: any },
+    payload: { role: 'user' | 'assistant' | 'system'; content: string; metadata?: any; mode?: 'chat' | 'sql' | 'rag' },
   ): Promise<BackendMessage> {
     return request<BackendMessage>(`/sessions/${sessionId}/messages`, {
       method: 'POST',
@@ -152,6 +170,77 @@ export const chatBackend = {
     return request<SearchResult[]>('/sessions/search', {
       method: 'POST',
       body: JSON.stringify(payload),
+    });
+  },
+
+  // ----- Document Upload APIs -----
+
+  async uploadDocument(
+    file: File,
+    userId: string,
+    forceDeepScan: boolean = false,
+    overwrite: boolean = false,
+  ): Promise<{ document_id: string; filename: string; status: string; message: string }> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('user_id', userId);
+    formData.append('force_deep_scan', String(forceDeepScan));
+    if (overwrite) {
+      formData.append('overwrite', 'true');
+    }
+
+    const url = buildRequestUrl('/upload');
+    const response = await fetch(url, {
+      method: 'POST',
+      body: formData,
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Upload failed: ${response.status} ${errorText}`);
+    }
+    return response.json();
+  },
+
+  async listDocuments(userId: string): Promise<DocumentInfo[]> {
+    return request<DocumentInfo[]>('/upload', undefined, { user_id: userId });
+  },
+
+  async getDocumentStatus(documentId: string): Promise<DocumentInfo> {
+    return request<DocumentInfo>(`/upload/${documentId}/status`);
+  },
+
+  async cancelDocument(documentId: string): Promise<{ status: string; message: string }> {
+    return request<{ status: string; message: string }>(`/upload/${documentId}/cancel`, {
+      method: 'DELETE',
+    });
+  },
+
+  async chooseDocumentEngine(
+    documentId: string,
+    engine: 'kreuzberg' | 'docling',
+  ): Promise<{ status: string; engine: string; document_id: string; message: string }> {
+    return request<{ status: string; engine: string; document_id: string; message: string }>(
+      `/upload/${documentId}/process`,
+      { method: 'POST' },
+      { engine },
+    );
+  },
+
+  // ----- Feedback API -----
+
+  async submitFeedback(
+    messageId: string,
+    isLiked: boolean,
+    reason?: string,
+  ): Promise<{ id: string; message: string }> {
+    return request<{ id: string; message: string }>('/feedback', {
+      method: 'POST',
+      body: JSON.stringify({
+        message_id: messageId,
+        is_liked: isLiked,
+        reason: reason || undefined,
+      }),
     });
   },
 };

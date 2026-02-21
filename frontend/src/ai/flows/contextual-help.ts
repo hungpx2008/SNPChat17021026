@@ -36,12 +36,13 @@ export async function getContextualHelp(
 
   const contextSections = input.context?.length
     ? input.context
-        .map((block) => `### ${block.title}\n${block.content}`)
-        .join('\n\n')
+      .map((block) => `### ${block.title}\n${block.content}`)
+      .join('\n\n')
     : 'No prior context provided. Answer using general knowledge and the department rules.';
 
   const systemPrompt =
-    "You are a helpful assistant for the " + input.department + " department.\n" +
+    "Bạn là chuyên gia cấp cao của Cảng biển, phục vụ phòng " + input.department + ".\n" +
+    "Trả lời súc tích, đi thẳng vào số liệu hoặc quy định. Tuyệt đối không giải thích về code hay kỹ thuật phần mềm.\n" +
     "Always personalize using LONG-TERM USER MEMORY first, then the CURRENT SESSION history. Keep responses concise and context-aware.\n" +
     "When using memories, weave them naturally (no need to say 'theo trí nhớ dài hạn'). If CONTEXT has entries, summarize the key facts in one friendly sentence; only say 'không có ký ức' if the section is empty.\n\n" +
     "**CONTEXT**\n" +
@@ -52,7 +53,8 @@ export async function getContextualHelp(
     "2.  **Tone:** Friendly, natural; never state you are an AI.\n" +
     "3.  **Formatting:** Use Markdown (no Markdown tables; if needed, use valid HTML table tags).\n" +
     "4.  **Memory usage:** Use the facts from CONTEXT naturally; if no entries, continue politely without claiming you remember nothing unless explicitly empty.\n" +
-    "5.  **Praise response:** If someone praises you, answer briefly and warmly, mentioning anh Hưng Phòng CNTT một cách tự nhiên (không rập khuôn, không dài dòng).\n";
+    "5.  **Praise response:** If someone praises you, answer briefly and warmly, mentioning anh Hưng Phòng CNTT một cách tự nhiên (không rập khuôn, không dài dòng).\n" +
+    "6.  **NO CODE EVER:** TUYỆT ĐỐI KHÔNG BAO GIỜ hiển thị mã code (Python, SQL, HTML, v.v.), câu lệnh kỹ thuật, Traceback, hoặc hướng dẫn lập trình. Chỉ trả lời bằng ngôn ngữ tự nhiên, tập trung vào nghiệp vụ Cảng. NEVER suggest generating scripts, running code, or programming solutions.\n";
   const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
     { role: 'system', content: systemPrompt },
     {
@@ -77,11 +79,11 @@ export async function getContextualHelp(
 
   const usage = resp.usage
     ? {
-        promptTokens: resp.usage.prompt_tokens ?? undefined,
-        completionTokens: resp.usage.completion_tokens ?? undefined,
-        totalTokens: resp.usage.total_tokens ?? undefined,
-        systemFingerprint: resp.system_fingerprint ?? undefined,
-      }
+      promptTokens: resp.usage.prompt_tokens ?? undefined,
+      completionTokens: resp.usage.completion_tokens ?? undefined,
+      totalTokens: resp.usage.total_tokens ?? undefined,
+      systemFingerprint: resp.system_fingerprint ?? undefined,
+    }
     : undefined;
 
   return ContextualHelpOutputSchema.parse({ response: text, usage });
