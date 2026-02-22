@@ -81,10 +81,10 @@ export function LoginForm() {
           </div>
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-                <Label htmlFor="password">{t('passwordLabel')}</Label>
-                <Link href="/forgot-password" passHref>
-                    <Button variant="link" className="p-0 h-auto text-sm">{t('forgotPasswordLink')}</Button>
-                </Link>
+              <Label htmlFor="password">{t('passwordLabel')}</Label>
+              <Link href="/forgot-password" passHref>
+                <Button variant="link" className="p-0 h-auto text-sm">{t('forgotPasswordLink')}</Button>
+              </Link>
             </div>
             <Input
               id="password"
@@ -94,7 +94,7 @@ export function LoginForm() {
               onChange={(e) => setPassword(e.target.value)}
             />
           </div>
-           <div className="space-y-2">
+          <div className="space-y-2">
             <Label htmlFor="department">{t('departmentLabel')}</Label>
             <Select onValueChange={setDepartment} value={department}>
               <SelectTrigger id="department">
@@ -111,7 +111,7 @@ export function LoginForm() {
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
           <Button type="submit" className="w-full bg-accent hover:bg-accent/90 text-accent-foreground" disabled={loading}>
-            {loading ? <LoaderCircle className="animate-spin"/> : t('loginButton')}
+            {loading ? <LoaderCircle className="animate-spin" /> : t('loginButton')}
           </Button>
         </form>
         <div className="mt-4 text-center text-sm">

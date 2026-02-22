@@ -5,6 +5,7 @@ import { getContextualHelp } from "@/ai/flows/contextual-help";
 import { getMultimodalHelp } from "@/ai/flows/multimodal-help";
 import { getMemory } from "@/lib/memory";
 import { chatBackend, type BackendMessage } from "@/services/chat-backend";
+import { localOpenAI, LOCAL_LLM_MODEL } from "@/ai/localClient";
 
 type HelpResult = Awaited<ReturnType<typeof getContextualHelp>>;
 
@@ -66,30 +67,106 @@ export async function getHelp({
   const requestPromise = (async () => {
     try {
       let contextResults: any[] = [];
-      try {
-        // Now calling backend semantic search which combines both Qdrant chunks and Mem0 memories
-        contextResults = await chatBackend.semanticSearch({
+      let mem0Memories: any[] = [];
+
+      // Run semantic search + direct Mem0 memory fetch in parallel
+      const [searchResult, memoryResult] = await Promise.allSettled([
+        chatBackend.semanticSearch({
           user_id: memoryUserId,
           department,
           query: question,
           limit: 5,
-        });
-      } catch (error) {
-        console.error("[getHelp] Semantic search failed", error);
+        }),
+        (async () => {
+          // Direct Mem0 get_all — guaranteed to return ALL user memories
+          const mem = await getMemory();
+          return mem.search(question, { user_id: memoryUserId, limit: 10 });
+        })(),
+      ]);
+
+      if (searchResult.status === 'fulfilled') {
+        contextResults = searchResult.value;
+      } else {
+        console.error("[getHelp] Semantic search failed", searchResult.reason);
+      }
+      if (memoryResult.status === 'fulfilled') {
+        mem0Memories = memoryResult.value;
+      } else {
+        console.error("[getHelp] Mem0 memory fetch failed", memoryResult.reason);
       }
 
-      let shortTermHistory: BackendMessage[] = [];
+      // ===== HYBRID CONTEXT WINDOW (3+3+summary) =====
+      // Tier 1: 3 most recent messages (raw, for immediate context)
+      let recentMessages: BackendMessage[] = [];
+      // Tier 3: Session summary (async-generated every 10 messages)
+      let sessionSummary: string | null = null;
+
       try {
-        const session = await chatBackend.fetchSession(sessionId, { limit: 10 });
-        shortTermHistory = session.messages || [];
+        const session = await chatBackend.fetchSession(sessionId, { limit: 3 });
+        recentMessages = session.messages || [];
+        // Extract summary from session metadata (set by summarize_session_history task)
+        const meta = session.metadata || (session as any).meta;
+        if (meta && typeof meta === 'object' && typeof (meta as any).summary === 'string') {
+          sessionSummary = (meta as any).summary;
+        }
       } catch (error) {
-        console.error("[getHelp] Could not fetch session for short-term history", error);
+        console.error("[getHelp] Could not fetch session", error);
+      }
+
+      // Tier 2: 3 semantically relevant old conversation chunks
+      let relevantOldChunks: any[] = [];
+      try {
+        const searchResults = await chatBackend.semanticSearch({
+          user_id: memoryUserId,
+          department,
+          query: question,
+          limit: 3,
+        });
+        // Only use short_term (chat_chunks) results, not long_term
+        relevantOldChunks = (searchResults || []).filter((r: any) => r.source === 'short_term');
+      } catch {
+        // Search failure is non-critical
       }
 
       const contextBlocks: ContextBlock[] = [];
+
+      // Inject Tier 3: Session summary (if exists)
+      if (sessionSummary) {
+        contextBlocks.push({
+          title: "Tóm tắt hội thoại trước đó",
+          content: sessionSummary,
+        });
+      }
+
+      // Inject dedicated Mem0 memories (guaranteed personalization)
+      if (mem0Memories.length > 0) {
+        contextBlocks.push({
+          title: "Thông tin cần nhớ về người dùng (Long-term Memory)",
+          content: mem0Memories
+            .map((item) => {
+              const text = truncate(item?.text ?? item?.memory ?? "", 500);
+              return `- ${text}`;
+            })
+            .join("\n"),
+        });
+      }
+
+      // Inject Tier 2: Relevant old conversation chunks
+      if (relevantOldChunks.length > 0) {
+        contextBlocks.push({
+          title: "Đoạn hội thoại cũ liên quan",
+          content: relevantOldChunks
+            .map((item, i) => {
+              const text = truncate(item?.text ?? "", 400);
+              const score = typeof item?.score === "number" ? ` (relevance: ${item.score.toFixed(2)})` : "";
+              return `#${i + 1}${score}\n${text}`;
+            })
+            .join("\n\n"),
+        });
+      }
+
       if (Array.isArray(contextResults) && contextResults.length) {
         const longTermMemories = contextResults.filter(r => r.source === 'long_term');
-        const shortTermChunks = contextResults.filter(r => r.source === 'short_term');
 
         if (longTermMemories.length) {
           contextBlocks.push({
@@ -103,30 +180,18 @@ export async function getHelp({
               .join("\n\n")
           });
         }
-
-        if (shortTermChunks.length) {
-          contextBlocks.push({
-            title: `Relevant local data (from Qdrant)`,
-            content: shortTermChunks
-              .map((item, index) => {
-                const text = truncate(item?.text ?? "", 500);
-                const score = typeof item?.score === "number" ? ` (score: ${item.score.toFixed(3)})` : "";
-                return `#${index + 1}${score}\n${text}`;
-              })
-              .join("\n\n")
-          });
-        }
-      } else if (memoryUserId) {
+      } else if (memoryUserId && mem0Memories.length === 0) {
         contextBlocks.push({
           title: `Memory status`,
           content: "No prior memories or relevant documents found.",
         });
       }
 
-      const shortTermText = formatHistory(shortTermHistory);
+      // Inject Tier 1: Recent conversation (3 messages, raw)
+      const shortTermText = formatHistory(recentMessages);
       if (shortTermText.trim()) {
         contextBlocks.push({
-          title: "Recent conversation (last 10 messages)",
+          title: "Cuộc trò chuyện gần nhất (3 tin nhắn)",
           content: shortTermText,
         });
       }
@@ -147,7 +212,7 @@ export async function getHelp({
     } catch (error) {
       console.error("Error getting contextual help:", error);
       return {
-        response: "Sorry, I encountered an error while trying to help. Please try again.",
+        response: "Xin lỗi Đại ca, hệ thống gặp sự cố. Vui lòng thử lại sau ạ.",
       };
     } finally {
       inFlightRequests.delete(cacheKey);
@@ -168,4 +233,44 @@ export async function getHelp({
     });
 
   return requestPromise;
+}
+
+/**
+ * Generate 3 contextual follow-up suggestions based on the last user question
+ * and the bot's response. Returns an empty array on any failure.
+ */
+export async function getSuggestions(
+  userQuestion: string,
+  botResponse: string,
+): Promise<string[]> {
+  try {
+    const completion = await localOpenAI.chat.completions.create({
+      model: LOCAL_LLM_MODEL,
+      temperature: 0.5,
+      max_tokens: 120,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Bạn là trợ lý cảng biển. Dựa vào câu hỏi và câu trả lời dưới đây, hãy đề xuất đúng 3 câu hỏi tiếp theo ngắn gọn (tối đa 10 từ mỗi câu) mà người dùng có thể hỏi. Trả về JSON array thuần túy, không giải thích, ví dụ: [\"Câu 1\",\"Câu 2\",\"Câu 3\"]",
+        },
+        {
+          role: "user",
+          content: `Câu hỏi: ${userQuestion.slice(0, 300)}\nCâu trả lời: ${botResponse.slice(0, 500)}`,
+        },
+      ],
+    });
+
+    const raw = completion.choices[0]?.message?.content?.trim() ?? "";
+    // Extract JSON array from response (LLM may wrap it in markdown)
+    const match = raw.match(/\[[\s\S]*\]/);
+    if (!match) return [];
+    const parsed = JSON.parse(match[0]);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+      .slice(0, 3);
+  } catch {
+    return [];
+  }
 }

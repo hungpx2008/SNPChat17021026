@@ -1,23 +1,3 @@
-# ==========================================================================
-# 🔁 SHARED ENV VARS & DEPENDS (YAML Anchors — DRY)
-# ==========================================================================
-x-common-env: &common-env
-  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-chatsnp}:${POSTGRES_PASSWORD:-12345678}@postgres:5432/${POSTGRES_DB:-chatsnp}
-  REDIS_URL: redis://redis:6379/0
-  CELERY_BROKER_URL: redis://redis:6379/0
-  QDRANT_URL: http://qdrant:6333
-  QDRANT_HOST: qdrant
-  QDRANT_PORT: 6333
-  QDRANT_COLLECTION: mem0_memories
-  MEM0_URL: http://mem0:8000
-  BACKEND_INTERNAL_URL: http://backend:8000
-  PYTHONUNBUFFERED: "1"
-  # AI Keys
-  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
-  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-  OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
-
 services:
   # ==========================================================================
   # 📦 DATA LAYER
@@ -30,11 +10,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-chatsnp}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-12345678}
       POSTGRES_DB: ${POSTGRES_DB:-chatsnp}
-    healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chatsnp}" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./docker/initdb:/docker-entrypoint-initdb.d
@@ -44,11 +19,6 @@ services:
     container_name: chatsnp-redis
     restart: unless-stopped
     command: [ "redis-server", "--save", "60", "1" ]
-    healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
@@ -58,11 +28,6 @@ services:
     image: qdrant/qdrant:latest
     container_name: chatsnp-qdrant
     restart: unless-stopped
-    healthcheck:
-      test: [ "CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' 2>/dev/null && echo ok || exit 1" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
     ports:
       - "${QDRANT_PORT_HTTP:-6333}:6333"
       - "${QDRANT_PORT_GRPC:-6334}:6334"
@@ -89,6 +54,7 @@ services:
       HISTORY_DB_PATH: /app/history/history.db
       HF_HOME: /root/.cache/huggingface
       HF_TOKEN: ${HF_TOKEN:-}
+      # LLM for memory extraction
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
       LLM_MODEL: ${LLM_MODEL:-openai/gpt-5-nano}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -99,11 +65,10 @@ services:
       - "8888:8000"
     volumes:
       - ./mem0-service/history:/app/history
-      - ./mem0-service:/app
       - huggingface-cache:/root/.cache/huggingface
     depends_on:
       qdrant:
-        condition: service_healthy
+        condition: service_started
 
   # ==========================================================================
   # 🚀 APPLICATION
@@ -115,21 +80,29 @@ services:
     container_name: chatsnp-backend
     restart: unless-stopped
     volumes:
-      - ./backend:/app
-      - media-data:/app/media
+      - media-data:/app/media # Shared với workers
     environment:
-      <<: *common-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-chatsnp}:${POSTGRES_PASSWORD:-12345678}@postgres:5432/${POSTGRES_DB:-chatsnp}
+      REDIS_URL: redis://redis:6379/0
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: mem0_memories
+      MEM0_URL: http://mem0:8000
+      CELERY_BROKER_URL: redis://redis:6379/0
+      PYTHONUNBUFFERED: "1"
+      # AI Keys (Loaded from .env by docker-compose interpolation)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
     ports:
       - "8000:8000"
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
-      mem0:
-        condition: service_started
+      - postgres
+      - qdrant
+      - redis
+      - mem0
 
   frontend:
     build:
@@ -138,9 +111,8 @@ services:
     container_name: chatsnp-frontend
     restart: unless-stopped
     environment:
-      NEXT_PUBLIC_BACKEND_URL: http://localhost:8000
+      NEXT_PUBLIC_BACKEND_URL: https://api-chatsnp.cntt-snp.online
       BACKEND_INTERNAL_URL: http://backend:8000
-      MEM0_URL: http://mem0:8000
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
@@ -160,19 +132,25 @@ services:
     container_name: chatsnp-worker-chat
     restart: unless-stopped
     command: celery -A src.worker.celery_app worker -Q chat_priority -c 2 --loglevel=info -n chat@%h
-    volumes:
-      - ./backend:/app
     environment:
-      <<: *common-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-chatsnp}:${POSTGRES_PASSWORD:-12345678}@postgres:5432/${POSTGRES_DB:-chatsnp}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      MEM0_URL: http://mem0:8000
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      BACKEND_INTERNAL_URL: http://backend:8000
+      PYTHONUNBUFFERED: "1"
+      # AI Keys for RAG
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
-      mem0:
-        condition: service_started
+      - redis
+      - postgres
+      - qdrant
+      - mem0
 
   worker_data:
     build:
@@ -181,17 +159,25 @@ services:
     container_name: chatsnp-worker-data
     restart: unless-stopped
     command: celery -A src.worker.celery_app worker -Q data_batch -c 2 --loglevel=info -n data@%h
-    volumes:
-      - ./backend:/app
     environment:
-      <<: *common-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-chatsnp}:${POSTGRES_PASSWORD:-12345678}@postgres:5432/${POSTGRES_DB:-chatsnp}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      PYTHONUNBUFFERED: "1"
+      # AI Keys
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      # Qdrant
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      QDRANT_COLLECTION: mem0_memories
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
+      - redis
+      - postgres
+      - qdrant
 
   worker_media:
     build:
@@ -201,19 +187,26 @@ services:
     restart: unless-stopped
     command: celery -A src.worker.celery_app worker -Q media_process -c 1 --loglevel=info -n media@%h
     volumes:
-      - ./backend:/app
-      - media-data:/app/media
+      - media-data:/app/media # Shared với backend
     environment:
-      <<: *common-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-chatsnp}:${POSTGRES_PASSWORD:-12345678}@postgres:5432/${POSTGRES_DB:-chatsnp}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      MEM0_URL: http://mem0:8000
+      BACKEND_INTERNAL_URL: http://backend:8000
+      PYTHONUNBUFFERED: "1"
+      # AI Keys for RAG
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      qdrant:
-        condition: service_healthy
-      mem0:
-        condition: service_started
+      - redis
+      - postgres
+      - qdrant
+      - mem0
 
   # ==========================================================================
   # 📊 MONITORING
@@ -227,14 +220,11 @@ services:
     command: celery -A src.worker.celery_app flower --port=5555 --broker_api=redis://redis:6379/0
     ports:
       - "5555:5555"
-    volumes:
-      - ./backend:/app
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       REDIS_URL: redis://redis:6379/0
     depends_on:
-      redis:
-        condition: service_healthy
+      - redis
 
 # ==========================================================================
 # 💾 VOLUMES
@@ -244,4 +234,4 @@ volumes:
   redis-data:
   qdrant-data:
   huggingface-cache:
-  media-data:
+  media-data: # Shared giữa backend + worker_media (charts, audio, docs)

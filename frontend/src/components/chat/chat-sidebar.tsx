@@ -1,5 +1,7 @@
 'use client';
 
+import { useState } from 'react';
+
 import type { ChangeEvent, KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,14 +33,16 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { LoaderCircle, LogOut, PlusSquare, Search, Trash2, User } from "lucide-react";
+import { LoaderCircle, LogOut, PlusSquare, Search, Trash2, User, FileText, MessageCircle } from "lucide-react";
 import type { ChatSession } from "./types";
+import { DocumentSidebar } from "./document-sidebar";
 
 type TranslateFn = (key: string) => string;
 
 interface ChatSearchResult {
   text: string;
   score: number;
+  source: string;
   metadata: Record<string, any>;
 }
 
@@ -58,6 +62,9 @@ interface ChatSidebarProps {
   userEmail?: string | null;
   t: TranslateFn;
   loading?: boolean;
+  userId?: string;
+  onAskAboutDocument?: (filename: string) => void;
+  docRefreshToken?: number;
 }
 
 export function ChatSidebar({
@@ -76,10 +83,51 @@ export function ChatSidebar({
   userEmail,
   t,
   loading,
+  userId,
+  onAskAboutDocument,
+  docRefreshToken,
 }: ChatSidebarProps) {
+  const [activeTab, setActiveTab] = useState<'chat' | 'docs'>('chat');
   const filteredHistory = chats.filter((chat) =>
     chat.title.toLowerCase().includes(searchTerm.toLowerCase()),
   );
+
+  const formatDateLabel = (date: Date | null): string => {
+    if (!date || Number.isNaN(date.getTime())) return "Khác";
+    const today = new Date();
+    const normalize = (d: Date) => {
+      const c = new Date(d);
+      c.setHours(0, 0, 0, 0);
+      return c;
+    };
+    const d0 = normalize(date);
+    const t0 = normalize(today);
+    const diffDays = Math.round((t0.getTime() - d0.getTime()) / 86_400_000);
+    if (diffDays === 0) return "Hôm nay";
+    if (diffDays === 1) return "Hôm qua";
+    return new Intl.DateTimeFormat("vi-VN", {
+      weekday: "short",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    }).format(date);
+  };
+
+  const groupedChats = (() => {
+    const sorted = [...filteredHistory].sort((a, b) => {
+      const da = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const db = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return db - da;
+    });
+    const groups: Record<string, ChatSession[]> = {};
+    sorted.forEach((chat) => {
+      const dateObj = chat.created_at ? new Date(chat.created_at) : null;
+      const label = formatDateLabel(dateObj);
+      if (!groups[label]) groups[label] = [];
+      groups[label].push(chat);
+    });
+    return Object.entries(groups).map(([label, chats]) => ({ label, chats }));
+  })();
 
   const handleSearchChange = (event: ChangeEvent<HTMLInputElement>) => {
     onSearchTermChange(event.target.value);
@@ -144,7 +192,7 @@ export function ChatSidebar({
               >
                 <p className="line-clamp-2">{result.text}</p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Score · {Number.isFinite(result.score) ? result.score.toFixed(2) : "--"}
+                  Score: {Number.isFinite(result.score) ? result.score.toFixed(2) : "--"}
                 </p>
               </button>
             ))}
@@ -152,53 +200,97 @@ export function ChatSidebar({
         )}
       </SidebarHeader>
       <SidebarContent>
-        <SidebarMenu>
-          {loading && (
-            <SidebarMenuItem>
-              <div className="px-2 py-4 text-sm text-muted-foreground">
-                {t("thinkingMessage")}
+        {/* Tab Bar */}
+        <div className="flex border-b px-2">
+          <button
+            className={`flex-1 py-2 text-xs font-medium flex items-center justify-center gap-1 border-b-2 transition-colors ${activeTab === 'chat'
+              ? 'border-primary text-primary'
+              : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            onClick={() => setActiveTab('chat')}
+          >
+            <MessageCircle size={14} />
+            Chat
+          </button>
+          <button
+            className={`flex-1 py-2 text-xs font-medium flex items-center justify-center gap-1 border-b-2 transition-colors ${activeTab === 'docs'
+              ? 'border-primary text-primary'
+              : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}
+            onClick={() => setActiveTab('docs')}
+          >
+            <FileText size={14} />
+            Tài liệu
+          </button>
+        </div>
+
+        {/* Chat Tab */}
+        {activeTab === 'chat' && (
+          <SidebarMenu>
+            {loading && (
+              <SidebarMenuItem>
+                <div className="px-2 py-4 text-sm text-muted-foreground">
+                  {t("thinkingMessage")}
+                </div>
+              </SidebarMenuItem>
+            )}
+            {!loading && groupedChats.map(({ label, chats }) => (
+              <div key={label} className="mt-2 first:mt-1">
+                <div className="px-2 pb-1 text-[11px] uppercase tracking-wide text-muted-foreground font-semibold">
+                  {label}
+                </div>
+                {chats.map((chat) => (
+                  <SidebarMenuItem key={chat.id}>
+                    <SidebarMenuButton
+                      tooltip={chat.title}
+                      size="sm"
+                      className="w-full justify-start"
+                      isActive={chat.id === activeChatId}
+                      onClick={() => onSelectChat(chat.id)}
+                    >
+                      <span className="truncate flex-1 text-left">{chat.title}</span>
+                    </SidebarMenuButton>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6 opacity-0 group-hover:opacity-100"
+                        >
+                          <Trash2 size={16} />
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>{t("deleteChatTitle")}</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            {t("deleteChatDescription")}
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>{t("cancelButton")}</AlertDialogCancel>
+                          <AlertDialogAction onClick={() => onDeleteChat(chat.id)}>
+                            {t("continueButton")}
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </SidebarMenuItem>
+                ))}
               </div>
-            </SidebarMenuItem>
-          )}
-          {!loading && filteredHistory.map((chat) => (
-            <SidebarMenuItem key={chat.id}>
-              <SidebarMenuButton
-                tooltip={chat.title}
-                size="sm"
-                className="w-full justify-start"
-                isActive={chat.id === activeChatId}
-                onClick={() => onSelectChat(chat.id)}
-              >
-                <span className="truncate flex-1 text-left">{chat.title}</span>
-              </SidebarMenuButton>
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6 opacity-0 group-hover:opacity-100"
-                  >
-                    <Trash2 size={16} />
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>{t("deleteChatTitle")}</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      {t("deleteChatDescription")}
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>{t("cancelButton")}</AlertDialogCancel>
-                    <AlertDialogAction onClick={() => onDeleteChat(chat.id)}>
-                      {t("continueButton")}
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            </SidebarMenuItem>
-          ))}
-        </SidebarMenu>
+            ))}
+          </SidebarMenu>
+        )}
+
+        {/* Document Tab */}
+        {activeTab === 'docs' && (
+          <DocumentSidebar
+            userId={userId || ''}
+            onAskAboutDocument={onAskAboutDocument || (() => { })}
+            visible={activeTab === 'docs'}
+            refreshToken={docRefreshToken}
+          />
+        )}
       </SidebarContent>
       <SidebarFooter>
         <div className="flex items-center gap-2 p-2">

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.models import ChatSession
@@ -18,6 +20,7 @@ from src.schemas.schemas import (
 )
 from src.services.chat_service import ChatService
 from src.api.deps import get_db_session, get_session_or_404
+from src.core.redis_client import get_redis
 
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -71,7 +74,7 @@ async def get_session(
     }
 
 
-@router.post("/{session_id}/messages", response_model=MessageSchema, status_code=201)
+@router.post("/{session_id}/messages", status_code=201)
 async def add_message(
     session_id: UUID,
     payload: MessageCreate,
@@ -86,7 +89,12 @@ async def add_message(
         department=db_session.department,
     )
     await db.commit()
-    return service.serialize_message(message)
+    result = service.serialize_message(message)
+    # Signal frontend about dispatched Celery tasks
+    intent_type = getattr(message, '_intent_type', 'chat')
+    result['task_dispatched'] = intent_type in ('sql', 'rag')
+    result['intent_type'] = intent_type
+    return result
 
 
 @router.post("/search", response_model=list[SearchResult])
@@ -97,3 +105,51 @@ async def search_memory(
     service = ChatService(db)
     results = await service.semantic_search(payload)
     return results
+
+
+@router.get("/{session_id}/stream")
+async def stream_session(session_id: UUID) -> StreamingResponse:
+    """
+    SSE endpoint: stream real-time events for a chat session.
+
+    Celery workers publish to Redis channel `session:{session_id}` when tasks
+    complete. This endpoint subscribes and forwards those events to the
+    frontend via Server-Sent Events, replacing the old polling loop.
+    """
+    return StreamingResponse(
+        _sse_event_generator(session_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _sse_event_generator(session_id: UUID):
+    """Subscribe to Redis Pub/Sub and yield SSE events."""
+    redis = get_redis()
+    pubsub = redis.pubsub()
+    channel = f"session:{session_id}"
+    await pubsub.subscribe(channel)
+    heartbeat_counter = 0
+    try:
+        while True:
+            message = await pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=1.0
+            )
+            if message and message["type"] == "message":
+                data = message["data"]
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8")
+                yield f"data: {data}\n\n"
+            else:
+                heartbeat_counter += 1
+                if heartbeat_counter >= 15:
+                    yield ": heartbeat\n\n"
+                    heartbeat_counter = 0
+            await asyncio.sleep(1.0)
+    finally:
+        await pubsub.unsubscribe(channel)
+        await pubsub.aclose()

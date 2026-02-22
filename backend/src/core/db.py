@@ -1,10 +1,20 @@
 from collections.abc import AsyncGenerator
+import logging
 
-from sqlalchemy import MetaData
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import MetaData, text
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import declarative_base
 
 from src.core.config import get_settings
+
+
+logger = logging.getLogger(__name__)
 
 
 NAMING_CONVENTION = {
@@ -52,3 +62,25 @@ async def create_tables() -> None:
     assert _engine is not None
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if conn.dialect.name == "postgresql":
+            await _ensure_metadata_columns(conn)
+        else:
+            logger.info("Skipping metadata column backfill for dialect: %s", conn.dialect.name)
+
+
+async def _ensure_metadata_columns(conn: AsyncConnection) -> None:
+    """Add missing JSON metadata columns to legacy tables for backward compatibility."""
+    tables = ("chat_sessions", "chat_messages", "chat_message_chunks", "documents")
+    for table in tables:
+        await conn.execute(
+            text(f"ALTER TABLE IF EXISTS {table} "
+                 f"ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{{}}'::jsonb")
+        )
+        await conn.execute(
+            text(f"ALTER TABLE IF EXISTS {table} "
+                 f"ALTER COLUMN metadata SET DEFAULT '{{}}'::jsonb")
+        )
+        await conn.execute(
+            text(f"UPDATE {table} SET metadata = '{{}}'::jsonb "
+                 f"WHERE metadata IS NULL")
+        )

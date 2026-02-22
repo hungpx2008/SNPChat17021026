@@ -76,13 +76,13 @@ export async function getMultimodalHelp(
 
   const contextSections = input.context?.length
     ? input.context
-        .map((block) => `### ${block.title}\n${block.content}`)
-        .join('\n\n')
+      .map((block) => `### ${block.title}\n${block.content}`)
+      .join('\n\n')
     : 'No prior context provided. Answer using general knowledge and the department rules.';
 
   const systemPrompt =
     "You are a helpful assistant for the " + input.department + " department.\n" +
-    "Your goal is to answer user questions accurately and naturally. Always incorporate the available context when forming your answer.\n\n" +
+    "You are a PORT OPERATIONS ASSISTANT. Your goal is to answer user questions accurately and naturally. Always incorporate the available context when forming your answer.\n\n" +
     "**CONTEXT**\n" +
     contextSections +
     "\n\n" +
@@ -94,7 +94,8 @@ export async function getMultimodalHelp(
     "    -   Use Markdown for basic styling like bold text, italics, and bulleted lists (`*` or `-`).\n" +
     "    -   **CRITICAL**: Do NOT use Markdown tables. For example, do NOT use | Header | or |---|. \n" +
     "    -   **If a table is required, you MUST format it using valid HTML table syntax** (with <table>, <thead>, <tbody>, <tr>, <th>, and <td> tags). Ensure the HTML is well-formed and complete.\n" +
-    "4.  **Conversation memory:** Carefully read the context above and reference relevant details explicitly when responding.\n\n" +
+    "4.  **Conversation memory:** Carefully read the context above and reference relevant details explicitly when responding.\n" +
+    "5.  **NO CODE EVER:** TUYỆT ĐỐI KHÔNG BAO GIỜ hiển thị mã code (Python, SQL, HTML, v.v.), câu lệnh kỹ thuật, hoặc hướng dẫn lập trình. Chỉ trả lời bằng ngôn ngữ tự nhiên, tập trung vào kết quả nghiệp vụ. NEVER suggest generating scripts, running code, or programming solutions.\n\n" +
     "Use your knowledge, the department context, the provided context, and any provided document/media to answer the user's question.";
 
   const baseMessages: { role: 'system' | 'user' | 'assistant'; content: any }[] = [
@@ -124,11 +125,11 @@ export async function getMultimodalHelp(
       '[No content returned from local model]';
     const usage = resp.usage
       ? {
-          promptTokens: resp.usage.prompt_tokens ?? undefined,
-          completionTokens: resp.usage.completion_tokens ?? undefined,
-          totalTokens: resp.usage.total_tokens ?? undefined,
-          systemFingerprint: resp.system_fingerprint ?? undefined,
-        }
+        promptTokens: resp.usage.prompt_tokens ?? undefined,
+        completionTokens: resp.usage.completion_tokens ?? undefined,
+        totalTokens: resp.usage.total_tokens ?? undefined,
+        systemFingerprint: resp.system_fingerprint ?? undefined,
+      }
       : undefined;
     return MultimodalHelpOutputSchema.parse({ response: text, usage });
   }
@@ -174,11 +175,11 @@ export async function getMultimodalHelp(
     '[No content returned from local model]';
   const usage = resp.usage
     ? {
-        promptTokens: resp.usage.prompt_tokens ?? undefined,
-        completionTokens: resp.usage.completion_tokens ?? undefined,
-        totalTokens: resp.usage.total_tokens ?? undefined,
-        systemFingerprint: resp.system_fingerprint ?? undefined,
-      }
+      promptTokens: resp.usage.prompt_tokens ?? undefined,
+      completionTokens: resp.usage.completion_tokens ?? undefined,
+      totalTokens: resp.usage.total_tokens ?? undefined,
+      systemFingerprint: resp.system_fingerprint ?? undefined,
+    }
     : undefined;
   return MultimodalHelpOutputSchema.parse({ response: text, usage });
 }

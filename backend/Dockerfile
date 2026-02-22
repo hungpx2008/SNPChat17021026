@@ -7,6 +7,13 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     libpq-dev \
     curl \
+    # Dependencies for OpenCV/docling pipelines (cv2 needs X11/GL libs)
+    libxcb1 \
+    libxext6 \
+    libxrender1 \
+    libsm6 \
+    libgl1 \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy application code
@@ -21,5 +28,6 @@ RUN pip install --no-cache-dir .
 # Expose port
 EXPOSE 8000
 
-# Default command: run FastAPI (workers override this in docker-compose)
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Production command: no --reload, multi-worker
+# Workers override this in docker-compose
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

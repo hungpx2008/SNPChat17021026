@@ -1,1 +1,0 @@
-"""ChatSNP backend package."""

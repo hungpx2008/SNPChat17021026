@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     chat_max_sessions: int = Field(100, alias="CHAT_MAX_SESSIONS")
     chat_cache_window: int = Field(20, alias="CHAT_CACHE_WINDOW")
     chat_chunk_size: int = Field(512, alias="CHAT_CHUNK_SIZE")
+    
+    # LLM Keys
+    openai_api_key: str | None = Field(None, alias="OPENAI_API_KEY")
+    openai_base_url: str = Field("https://openrouter.ai/api/v1", alias="OPENAI_BASE_URL")
+    openrouter_api_key: str | None = Field(None, alias="OPENROUTER_API_KEY")
+    llm_model: str = Field("openai/gpt-5-nano", alias="LLM_MODEL")
 
     allowed_origins: Any = Field(default_factory=lambda: ["*"], alias="CORS_ALLOW_ORIGINS")
 

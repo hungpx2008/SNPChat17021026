@@ -4,8 +4,17 @@ import type { ChangeEvent, RefObject, FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { AttachmentPreview } from "./attachment-preview";
-import { Paperclip, X, Send, LoaderCircle } from "lucide-react";
+import { Paperclip, X, Send, LoaderCircle, Bot, BarChart3, FileText } from "lucide-react";
+import { cn } from "@/lib/utils";
 import type { AttachedFile } from "./types";
+
+export type AgentMode = "chat" | "sql" | "rag";
+
+const MODE_OPTIONS: { value: AgentMode; label: string; icon: typeof Bot; description: string }[] = [
+  { value: "chat", label: "Trợ lý", icon: Bot, description: "Hỏi đáp tổng quát" },
+  { value: "sql", label: "Số liệu", icon: BarChart3, description: "Truy vấn dữ liệu Cảng" },
+  { value: "rag", label: "Tài liệu", icon: FileText, description: "Hỏi nội dung PDF/file" },
+];
 
 type TranslateFn = (key: string) => string;
 
@@ -22,6 +31,8 @@ interface ChatComposerProps {
   onSubmit: (formData: FormData) => Promise<boolean> | boolean;
   submitting?: boolean;
   t: TranslateFn;
+  selectedMode: AgentMode;
+  onModeChange: (mode: AgentMode) => void;
 }
 
 export function ChatComposer({
@@ -37,6 +48,8 @@ export function ChatComposer({
   onSubmit,
   submitting = false,
   t,
+  selectedMode,
+  onModeChange,
 }: ChatComposerProps) {
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -58,6 +71,30 @@ export function ChatComposer({
   return (
     <footer className="p-4 border-t bg-card">
       <div className="mx-auto">
+        {/* Mode Selector */}
+        <div className="flex items-center gap-1 mb-2">
+          {MODE_OPTIONS.map(opt => {
+            const Icon = opt.icon;
+            const isActive = selectedMode === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                title={opt.description}
+                onClick={() => onModeChange(opt.value)}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200",
+                  isActive
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground",
+                )}
+              >
+                <Icon size={14} />
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
         {attachedFile && (
           <div className="relative mb-2 w-fit">
             <div className="p-2 border rounded-lg">
@@ -90,7 +127,13 @@ export function ChatComposer({
           <Textarea
             ref={textareaRef}
             name="userInput"
-            placeholder={t("chatInputPlaceholder")}
+            placeholder={
+              selectedMode === "sql"
+                ? "Hỏi về số liệu cảng... (VD: Thống kê container tháng 1)"
+                : selectedMode === "rag"
+                  ? "Hỏi về nội dung tài liệu... (VD: Biểu phí cẩu container)"
+                  : t("chatInputPlaceholder")
+            }
             className="flex-1 resize-none max-h-48"
             value={input}
             onChange={(event) => onInputChange(event.target.value)}
