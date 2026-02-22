@@ -10,6 +10,7 @@ Tasks:
 """
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from uuid import uuid4
 
@@ -236,17 +237,20 @@ def _do_full_processing(
     chunks_with_pages = _smart_chunk(extracted_text, chunk_size=512, overlap=50)
     logger.info(f"[chunking] Created {len(chunks_with_pages)} chunks for {filename}")
 
-    # 2. Embed via Mem0
+    # 2. Embed via Mem0 — parallel with ThreadPoolExecutor
     mem0_url = os.getenv("MEM0_URL", "http://mem0:8000")
-    vectors = []
-    for chunk_text, _ in chunks_with_pages:
+    embed_url = f"{mem0_url.rstrip('/')}/embed"
+
+    def _embed_chunk(chunk_text: str) -> list[float]:
         with httpx.Client(timeout=30.0) as client:
-            resp = client.post(
-                f"{mem0_url.rstrip('/')}/embed",
-                json={"text": chunk_text},
-            )
+            resp = client.post(embed_url, json={"text": chunk_text})
             resp.raise_for_status()
-            vectors.append(resp.json()["vector"])
+            return resp.json()["vector"]
+
+    chunk_texts = [ct for ct, _ in chunks_with_pages]
+    max_workers = min(len(chunk_texts), 8)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        vectors = list(pool.map(_embed_chunk, chunk_texts))
 
     # 3. Build payloads with metadata for citations
     payloads = []

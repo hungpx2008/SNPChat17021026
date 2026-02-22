@@ -153,7 +153,7 @@ export const chatBackend = {
 
   async appendMessage(
     sessionId: string,
-    payload: { role: 'user' | 'assistant' | 'system'; content: string; metadata?: any; mode?: 'auto' | 'chat' | 'sql' | 'rag' },
+    payload: { role: 'user' | 'assistant' | 'system'; content: string; metadata?: any; mode?: 'chat' | 'sql' | 'rag' },
   ): Promise<BackendMessage> {
     return request<BackendMessage>(`/sessions/${sessionId}/messages`, {
       method: 'POST',
@@ -196,8 +196,27 @@ export const chatBackend = {
       cache: 'no-store',
     });
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Upload failed: ${response.status} ${errorText}`);
+      let errorDetail: string | null = null;
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        try {
+          const json = await response.json();
+          errorDetail = json.detail || json.message || JSON.stringify(json);
+        } catch {
+          // ignore
+        }
+      }
+      if (!errorDetail) {
+        try {
+          errorDetail = await response.text();
+        } catch {
+          errorDetail = 'Unknown error';
+        }
+      }
+      const error: any = new Error(errorDetail || 'Upload failed');
+      error.status = response.status;
+      error.detail = errorDetail;
+      throw error;
     }
     return response.json();
   },
@@ -228,6 +247,11 @@ export const chatBackend = {
   },
 
   // ----- Feedback API -----
+
+  /** Build the direct URL to preview/download a document file. */
+  getDocumentDownloadUrl(documentId: string): string {
+    return buildRequestUrl(`/upload/${documentId}/download`);
+  },
 
   async submitFeedback(
     messageId: string,

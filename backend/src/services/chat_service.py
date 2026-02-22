@@ -78,20 +78,21 @@ class ChatService:
         )
         await self.session.flush()
 
-        # Update cache immediately with the new message
+        # Update cache: append new message instead of full DB reload
         cache_key = self._cache_key(session_id)
-        all_messages = await self.message_repo.list_messages(session_id)
-        cache_payload = [self.serialize_message(msg) for msg in all_messages]
-        await self.redis.set(cache_key, json.dumps(cache_payload), ex=3600)
+        cached_raw = await self.redis.get(cache_key)
+        if cached_raw:
+            existing = json.loads(cached_raw)
+            existing.append(self.serialize_message(db_message))
+            await self.redis.set(cache_key, json.dumps(existing), ex=3600)
+            all_messages = existing  # reuse for msg_count below
+        else:
+            all_messages = await self.message_repo.list_messages(session_id)
+            cache_payload = [self.serialize_message(msg) for msg in all_messages]
+            await self.redis.set(cache_key, json.dumps(cache_payload), ex=3600)
 
-        # ── Orchestrator Agent: Auto-classify or use explicit mode ──
-        mode = getattr(message, 'mode', 'auto')
-
-        if mode == "auto":
-            # AI auto-classification via PydanticAI Agent
-            from src.services.router_service import classify_intent_pydantic
-            mode = await classify_intent_pydantic(message.content)
-            logger.info(f"[orchestrator] Auto-classified → {mode}")
+        # ── Dispatch task based on explicit mode (user must choose) ──
+        mode = getattr(message, 'mode', 'chat')
 
         if mode == "sql":
             from src.worker.tasks import run_sql_query

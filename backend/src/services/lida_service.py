@@ -33,7 +33,7 @@ class LidaService:
 
                 openai_key = os.getenv("OPENAI_API_KEY", "")
                 openai_base = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
-                model = os.getenv("LLM_MODEL", "openai/gpt-4o-mini")
+                model = os.getenv("LLM_MODEL", "openai/gpt-5-nano")
 
                 text_gen = llm(
                     provider="openai",

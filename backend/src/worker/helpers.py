@@ -4,12 +4,33 @@ Shared helper functions for Celery tasks.
 These are NOT tasks themselves — just utility functions used by
 chat_tasks, data_tasks, and media_tasks.
 """
+import json
 import logging
 import os
 import re
 from typing import Any
 
+import redis as sync_redis
+
 logger = logging.getLogger(__name__)
+
+
+def publish_task_complete(session_id: str, event: str = "message_ready") -> None:
+    """
+    Publish a Redis Pub/Sub event when a Celery task finishes.
+    The SSE endpoint subscribes to `session:{session_id}` and forwards
+    these events to the frontend in real-time.
+    """
+    try:
+        redis_url = os.getenv("REDIS_URL", os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0"))
+        r = sync_redis.from_url(redis_url)
+        r.publish(
+            f"session:{session_id}",
+            json.dumps({"event": event, "session_id": session_id}),
+        )
+        logger.info(f"[pubsub] Published '{event}' for session {session_id}")
+    except Exception as exc:
+        logger.warning(f"[pubsub] Failed to publish event: {exc}")
 
 
 def _truncate_tables(text: str) -> str:

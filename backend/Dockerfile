@@ -7,6 +7,13 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     libpq-dev \
     curl \
+    # Dependencies for OpenCV/docling pipelines (cv2 needs X11/GL libs)
+    libxcb1 \
+    libxext6 \
+    libxrender1 \
+    libsm6 \
+    libgl1 \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy application code

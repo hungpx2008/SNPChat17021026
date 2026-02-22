@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(None, alias="OPENAI_API_KEY")
     openai_base_url: str = Field("https://openrouter.ai/api/v1", alias="OPENAI_BASE_URL")
     openrouter_api_key: str | None = Field(None, alias="OPENROUTER_API_KEY")
-    llm_model: str = Field("gpt-4o-mini", alias="LLM_MODEL")
+    llm_model: str = Field("openai/gpt-5-nano", alias="LLM_MODEL")
 
     allowed_origins: Any = Field(default_factory=lambda: ["*"], alias="CORS_ALLOW_ORIGINS")
 

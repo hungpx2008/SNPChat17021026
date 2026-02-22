@@ -17,6 +17,7 @@ export interface ChatSession {
   title: string;
   messages: Message[];
   department: string;
+  created_at?: string;
 }
 
 export interface AttachedFile {

@@ -4,25 +4,17 @@ import type { ChangeEvent, RefObject, FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { AttachmentPreview } from "./attachment-preview";
-import { Paperclip, X, Send, LoaderCircle, Bot, BarChart3, FileText, Sparkles } from "lucide-react";
+import { Paperclip, X, Send, LoaderCircle, Bot, BarChart3, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AttachedFile } from "./types";
 
-export type AgentMode = "auto" | "chat" | "sql" | "rag";
+export type AgentMode = "chat" | "sql" | "rag";
 
 const MODE_OPTIONS: { value: AgentMode; label: string; icon: typeof Bot; description: string }[] = [
-  { value: "auto", label: "Auto", icon: Sparkles, description: "AI tự phân loại" },
   { value: "chat", label: "Trợ lý", icon: Bot, description: "Hỏi đáp tổng quát" },
   { value: "sql", label: "Số liệu", icon: BarChart3, description: "Truy vấn dữ liệu Cảng" },
   { value: "rag", label: "Tài liệu", icon: FileText, description: "Hỏi nội dung PDF/file" },
 ];
-
-const STARTER_TAGS: Record<AgentMode, string[]> = {
-  auto: ["Sản lượng tháng này", "Biểu giá cầu bến", "Tổng quan hoạt động hôm nay"],
-  chat: ["Tổng quan hoạt động hôm nay", "Lịch tàu đến cảng", "Quy trình xuất nhập container"],
-  sql: ["Sản lượng hàng hoá tháng này", "So sánh Q1 và Q2", "Top 10 khách hàng"],
-  rag: ["Biểu giá dịch vụ cầu bến", "Quy định an toàn lao động", "Nội quy cảng"],
-};
 
 type TranslateFn = (key: string) => string;
 
@@ -103,27 +95,6 @@ export function ChatComposer({
             );
           })}
         </div>
-
-        {/* Starter Tags — Quick Action Chips */}
-        {!input.trim() && !attachedFile && (
-          <div className="flex flex-wrap gap-1.5 mb-2">
-            {STARTER_TAGS[selectedMode].map((tag) => (
-              <button
-                key={tag}
-                type="button"
-                onClick={() => {
-                  onInputChange(tag);
-                  // Auto-submit after short delay
-                  setTimeout(() => formRef.current?.requestSubmit(), 100);
-                }}
-                className="px-3 py-1 rounded-full text-[11px] font-medium bg-accent/50 text-accent-foreground hover:bg-accent hover:shadow-sm border border-accent/30 transition-all duration-200"
-              >
-                {tag}
-              </button>
-            ))}
-          </div>
-        )}
-
         {attachedFile && (
           <div className="relative mb-2 w-fit">
             <div className="p-2 border rounded-lg">
@@ -200,4 +171,3 @@ function SubmitButton({ ariaLabel, pending }: { ariaLabel: string; pending: bool
     </Button>
   );
 }
-

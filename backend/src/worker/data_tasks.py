@@ -12,19 +12,20 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.providers.openai import OpenAIProvider
 
 from .celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
-# Initialize the model (OpenRouter)
+# Initialize the model (OpenRouter) — reads from LLM_MODEL env var
 openai_key = os.getenv("OPENAI_API_KEY", "")
 openai_base = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+llm_model = os.getenv("LLM_MODEL", "openai/gpt-5-nano")
 
 model = OpenAIModel(
-    'openai/gpt-4o-mini',
-    base_url=openai_base,
-    api_key=openai_key,
+    llm_model,
+    provider=OpenAIProvider(base_url=openai_base, api_key=openai_key),
 )
 
 class SQLAgentResult(BaseModel):
@@ -37,7 +38,7 @@ class SQLAgentResult(BaseModel):
 # ---------------------------------------------------------------------------
 sql_agent = Agent(
     model,
-    result_type=SQLAgentResult,
+    output_type=SQLAgentResult,
     system_prompt=(
         "You are a SQL Expert for ChatSNP Vietnamese Port System. "
         "Your goal is to provide a valid, safe, and efficient SQL query for the user's question. "
@@ -126,8 +127,8 @@ def run_sql_query(
             import asyncio
             agent_run = asyncio.run(sql_agent.run(prompt))
             
-            sql = agent_run.data.sql
-            explanation = agent_run.data.explanation
+            sql = agent_run.output.sql
+            explanation = agent_run.output.explanation
             logger.info(f"[sql_agent] Final SQL: {sql}")
         except Exception as agent_err:
             logger.error(f"[sql_agent] Agent failed: {agent_err}")
@@ -212,6 +213,10 @@ def run_sql_query(
             logger.error(f"Failed to save message via API: {e}")
             return {"status": "error", "message": str(e)}
 
+        # Notify frontend via SSE that the response is ready
+        from .helpers import publish_task_complete
+        publish_task_complete(session_id)
+
         return {
             "status": "success",
             "question": question,
@@ -233,6 +238,9 @@ def run_sql_query(
                 )
         except Exception:
             pass
+        # Still notify frontend so it stops waiting
+        from .helpers import publish_task_complete
+        publish_task_complete(session_id)
         return {"status": "error", "message": "Internal error"}
 
 

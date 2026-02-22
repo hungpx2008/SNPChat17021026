@@ -5,6 +5,7 @@ import { getContextualHelp } from "@/ai/flows/contextual-help";
 import { getMultimodalHelp } from "@/ai/flows/multimodal-help";
 import { getMemory } from "@/lib/memory";
 import { chatBackend, type BackendMessage } from "@/services/chat-backend";
+import { localOpenAI, LOCAL_LLM_MODEL } from "@/ai/localClient";
 
 type HelpResult = Awaited<ReturnType<typeof getContextualHelp>>;
 
@@ -232,4 +233,44 @@ export async function getHelp({
     });
 
   return requestPromise;
+}
+
+/**
+ * Generate 3 contextual follow-up suggestions based on the last user question
+ * and the bot's response. Returns an empty array on any failure.
+ */
+export async function getSuggestions(
+  userQuestion: string,
+  botResponse: string,
+): Promise<string[]> {
+  try {
+    const completion = await localOpenAI.chat.completions.create({
+      model: LOCAL_LLM_MODEL,
+      temperature: 0.5,
+      max_tokens: 120,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Bạn là trợ lý cảng biển. Dựa vào câu hỏi và câu trả lời dưới đây, hãy đề xuất đúng 3 câu hỏi tiếp theo ngắn gọn (tối đa 10 từ mỗi câu) mà người dùng có thể hỏi. Trả về JSON array thuần túy, không giải thích, ví dụ: [\"Câu 1\",\"Câu 2\",\"Câu 3\"]",
+        },
+        {
+          role: "user",
+          content: `Câu hỏi: ${userQuestion.slice(0, 300)}\nCâu trả lời: ${botResponse.slice(0, 500)}`,
+        },
+      ],
+    });
+
+    const raw = completion.choices[0]?.message?.content?.trim() ?? "";
+    // Extract JSON array from response (LLM may wrap it in markdown)
+    const match = raw.match(/\[[\s\S]*\]/);
+    if (!match) return [];
+    const parsed = JSON.parse(match[0]);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+      .slice(0, 3);
+  } catch {
+    return [];
+  }
 }

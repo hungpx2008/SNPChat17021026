@@ -6,7 +6,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type ChangeEvent,
 } from "react";
 import { useRouter } from "next/navigation";
 import { LoaderCircle } from "lucide-react";
@@ -21,8 +20,15 @@ import { ChatHeader } from "./chat/chat-header";
 import { ChatMessageList } from "./chat/chat-message-list";
 import { ChatSidebar } from "./chat/chat-sidebar";
 import { ProcessingStatus } from "./chat/processing-status";
-import type { AttachedFile, ChatSession, Message } from "./chat/types";
-import { chatBackend, type BackendMessage, type SearchResult } from "../services/chat-backend";
+import { ErrorBoundary } from "./error-boundary";
+import type { Message } from "./chat/types";
+import { chatBackend } from "../services/chat-backend";
+
+import { useChatSessions } from "@/hooks/use-chat-sessions";
+import { useChatMessages } from "@/hooks/use-chat-messages";
+import { useFileAttachment } from "@/hooks/use-file-attachment";
+import { useChatSearch } from "@/hooks/use-chat-search";
+import { useSessionStream } from "@/hooks/use-session-stream";
 
 export function ChatUI({ department }: { department: string }) {
   const { t, language, setLanguage } = useLanguage();
@@ -43,45 +49,102 @@ export function ChatUI({ department }: { department: string }) {
     return "guest-user";
   }, [user?.id, user?.email]);
 
-  const welcomeMessage = useCallback(
-    (): Message => ({
-      id: Date.now(),
-      role: "bot",
-      content: t("welcomeMessage").replace("{department}", department),
-    }),
-    [department, t],
-  );
-
-  const [chatHistory, setChatHistory] = useState<ChatSession[]>([]);
-  const [activeChatId, setActiveChatId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Message[]>([welcomeMessage()]);
-  const [sessionsLoading, setSessionsLoading] = useState(false);
-  const [messagesLoading, setMessagesLoading] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  // ─── Local UI state ────────────────────────────────────────────
   const [input, setInput] = useState("");
-  const [searchTerm, setSearchTerm] = useState("");
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const [attachedFile, setAttachedFile] = useState<AttachedFile | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [agentMode, setAgentMode] = useState<AgentMode>("chat");
   const [useInternalData, setUseInternalData] = useState(true);
   const [usePersonalData, setUsePersonalData] = useState(true);
-  const [forceDeepScan, setForceDeepScan] = useState(false);
-  const [agentMode, setAgentMode] = useState<AgentMode>("auto");
-  const [error, setError] = useState<string | null>(null);
+  const [waitingForTask, setWaitingForTask] = useState(false);
 
   const formRef = useRef<HTMLFormElement>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, []);
+  // ─── Custom hooks ──────────────────────────────────────────────
+  const {
+    messages,
+    setMessages,
+    messagesLoading,
+    messagesEndRef,
+    loadSessionMessages,
+    welcomeMessage,
+    resetMessages,
+  } = useChatMessages(t, department);
 
+  const {
+    chatHistory,
+    setChatHistory,
+    activeChatId,
+    setActiveChatId,
+    sessionsLoading,
+    loadSessions,
+    handleNewChat: _handleNewChat,
+    handleSelectChat: _handleSelectChat,
+    handleDeleteChat: _handleDeleteChat,
+  } = useChatSessions(userIdentifier, department, t, welcomeMessage);
+
+  const {
+    attachedFile,
+    setAttachedFile,
+    fileInputRef,
+    docRefreshToken,
+    handleFileAttachClick,
+    handleFileChange,
+  } = useFileAttachment(userIdentifier, setMessages, setError);
+
+  const {
+    searchTerm,
+    setSearchTerm,
+    searchResults,
+    setSearchResults,
+    searchLoading,
+    handleSearchSubmit,
+    clearSearch,
+  } = useChatSearch(userIdentifier, department, setError);
+
+  // ─── SSE stream for Celery task completion ─────────────────────
+  const handleSSEMessageReady = useCallback(async () => {
+    if (activeChatId) {
+      try {
+        const finalMessages = await loadSessionMessages(activeChatId);
+        if (finalMessages) {
+          setChatHistory((prev) =>
+            prev.map((chat) =>
+              chat.id === activeChatId
+                ? { ...chat, messages: finalMessages }
+                : chat,
+            ),
+          );
+        }
+      } catch {
+        // loadSessionMessages already logs errors
+      }
+      setWaitingForTask(false);
+      setSubmitting(false);
+    }
+  }, [activeChatId, loadSessionMessages, setChatHistory]);
+
+  useSessionStream(activeChatId, waitingForTask, handleSSEMessageReady);
+
+  // SSE fallback timeout: if no event in 90s, force reload
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, scrollToBottom]);
+    if (!waitingForTask) return;
+    const timer = setTimeout(async () => {
+      if (activeChatId) {
+        try {
+          await loadSessionMessages(activeChatId);
+        } catch {
+          // ignore
+        }
+      }
+      setWaitingForTask(false);
+      setSubmitting(false);
+    }, 90_000);
+    return () => clearTimeout(timer);
+  }, [waitingForTask, activeChatId, loadSessionMessages]);
 
+  // ─── Auto-resize textarea ──────────────────────────────────────
   useEffect(() => {
     const textarea = textareaRef.current;
     if (textarea) {
@@ -90,96 +153,61 @@ export function ChatUI({ department }: { department: string }) {
     }
   }, [input]);
 
-  const mapBackendMessage = useCallback(
-    (message: BackendMessage): Message => {
-      const meta = (message.metadata ?? {}) as { attachment?: AttachedFile | null; attachments?: any[] };
-      if (meta?.attachment) {
-        return {
-          id: new Date(message.created_at).getTime(),
-          role: message.role === "assistant" ? "bot" : "user",
-          backendId: message.id,
-          metadata: { attachments: meta.attachments || [] },
-          content: (
-            <div>
-              <AttachmentPreview file={meta.attachment} size="lg" />
-              <p>{message.content}</p>
-            </div>
-          ),
-        };
-      }
-
-      return {
-        id: new Date(message.created_at).getTime(),
-        role: message.role === "assistant" ? "bot" : "user",
-        backendId: message.id,
-        metadata: { attachments: meta.attachments || [] },
-        content: message.content,
-      };
-    },
-    [],
-  );
-
-  const loadSessions = useCallback(async () => {
-    setSessionsLoading(true);
-    try {
-      const sessions = await chatBackend.listSessions(userIdentifier);
-      setChatHistory(
-        sessions.map((session) => ({
-          id: session.id,
-          title: session.title ?? t("newChatTooltip"),
-          messages: [],
-          department: session.department ?? department,
-        })),
-      );
-      if (sessions.length === 0) {
-        setActiveChatId(null);
-        setMessages([welcomeMessage()]);
-      }
-    } catch (err) {
-      console.error("Failed to load sessions", err);
-      setError("Failed to load sessions. Please try again.");
-    } finally {
-      setSessionsLoading(false);
-    }
-  }, [userIdentifier, welcomeMessage, department, t]);
-
-  const loadSessionMessages = useCallback(
-    async (sessionId: string) => {
-      setMessagesLoading(true);
-      try {
-        const session = await chatBackend.fetchSession(sessionId);
-        const mapped = session.messages.map(mapBackendMessage);
-        const finalMessages = mapped.length > 0 ? mapped : [welcomeMessage()];
-        setMessages(finalMessages);
-        setChatHistory((prev) =>
-          prev.map((chat) =>
-            chat.id === sessionId ? { ...chat, messages: finalMessages } : chat,
-          ),
-        );
-      } catch (err) {
-        console.error("Failed to load session messages", err);
-        setError("Unable to load chat history. Please try again.");
-      } finally {
-        setMessagesLoading(false);
-      }
-    },
-    [mapBackendMessage, welcomeMessage],
-  );
-
+  // ─── Load sessions on mount ────────────────────────────────────
   useEffect(() => {
-    void loadSessions();
-  }, [loadSessions]);
+    loadSessions().then((sessions) => {
+      if (sessions && sessions.length === 0) {
+        setActiveChatId(null);
+        resetMessages();
+      }
+    }).catch(() => {
+      setError("Failed to load sessions. Please try again.");
+    });
+  }, [loadSessions, setActiveChatId, resetMessages]);
 
+  // ─── Bridging callbacks (hooks → UI) ──────────────────────────
+  const handleNewChat = useCallback(() => {
+    _handleNewChat(resetMessages, clearSearch);
+  }, [_handleNewChat, resetMessages, clearSearch]);
+
+  const handleSelectChat = useCallback(
+    async (chatId: string) => {
+      await _handleSelectChat(chatId, loadSessionMessages, setMessages, clearSearch);
+    },
+    [_handleSelectChat, loadSessionMessages, setMessages, clearSearch],
+  );
+
+  const handleDeleteChat = useCallback(
+    (chatId: string) => {
+      _handleDeleteChat(chatId, resetMessages);
+    },
+    [_handleDeleteChat, resetMessages],
+  );
+
+  const handleSearchResultSelect = useCallback(
+    async (result: { metadata: Record<string, any> }) => {
+      const sessionId = result.metadata?.session_id as string | undefined;
+      if (sessionId) {
+        await handleSelectChat(sessionId);
+      }
+    },
+    [handleSelectChat],
+  );
+
+  const handleSignOut = useCallback(() => {
+    logout();
+    router.push("/login");
+  }, [logout, router]);
+
+  // ─── Form submit ──────────────────────────────────────────────
   const handleFormSubmit = useCallback(
     async (formData: FormData): Promise<boolean> => {
-      if (submitting) {
-        return false;
-      }
+      if (submitting) return false;
+
       const userInput = (formData.get("userInput") as string) ?? "";
       const trimmedInput = userInput.trim();
-      if (!trimmedInput && !attachedFile) {
-        return false;
-      }
+      if (!trimmedInput && !attachedFile) return false;
+
       setSubmitting(true);
       setError(null);
 
@@ -187,6 +215,7 @@ export function ChatUI({ department }: { department: string }) {
       const sessionTitle =
         trimmedInput.substring(0, 30) + (trimmedInput.length > 30 ? "..." : "");
 
+      // Create session if needed
       if (!sessionId) {
         try {
           const createdSession = await chatBackend.createSession({
@@ -202,6 +231,7 @@ export function ChatUI({ department }: { department: string }) {
               title: createdSession.title ?? sessionTitle ?? t("newChatTooltip"),
               messages: [],
               department: createdSession.department ?? department,
+              created_at: createdSession.created_at,
             },
             ...prev,
           ]);
@@ -218,6 +248,7 @@ export function ChatUI({ department }: { department: string }) {
         return false;
       }
 
+      // Optimistic UI update
       const userMessage: Message = {
         id: Date.now(),
         role: "user",
@@ -232,16 +263,15 @@ export function ChatUI({ department }: { department: string }) {
       const thinkingMessage: Message = {
         id: Date.now() + 1,
         role: "bot",
-        content: (
+        content:
           agentMode === "chat" ? (
             <div className="flex items-center gap-2">
               <LoaderCircle className="animate-spin h-5 w-5" />
               <span>{t("thinkingMessage")}</span>
             </div>
           ) : (
-            <ProcessingStatus mode={agentMode} />
-          )
-        ),
+            <ProcessingStatus mode={agentMode as "sql" | "rag"} />
+          ),
       };
 
       setMessages((prev) => [...prev, userMessage, thinkingMessage]);
@@ -249,17 +279,18 @@ export function ChatUI({ department }: { department: string }) {
         prev.map((chat) =>
           chat.id === sessionId
             ? {
-              ...chat,
-              title:
-                chat.title && chat.title !== t("newChatTooltip")
-                  ? chat.title
-                  : sessionTitle ?? chat.title,
-              messages: [...chat.messages, userMessage],
-            }
+                ...chat,
+                title:
+                  chat.title && chat.title !== t("newChatTooltip")
+                    ? chat.title
+                    : sessionTitle ?? chat.title,
+                messages: [...chat.messages, userMessage],
+              }
             : chat,
         ),
       );
 
+      // Clear form
       formRef.current?.reset();
       setInput("");
       if (textareaRef.current) {
@@ -276,29 +307,14 @@ export function ChatUI({ department }: { department: string }) {
           mode: agentMode,
         });
 
-        // Check if backend dispatched a Celery task (SQL/RAG)
         const taskDispatched = (appendResult as any).task_dispatched === true;
 
         if (taskDispatched) {
-          // Poll for Celery result instead of calling getHelp()
-          const maxAttempts = 30; // 30 * 2s = 60s max wait
-          let found = false;
-          for (let i = 0; i < maxAttempts; i++) {
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            try {
-              const session = await chatBackend.fetchSession(sessionId, { limit: 5 });
-              const lastMsg = session.messages?.[session.messages.length - 1];
-              if (lastMsg && lastMsg.role === 'assistant') {
-                found = true;
-                break;
-              }
-            } catch {
-              // ignore polling errors
-            }
-          }
-          await loadSessionMessages(sessionId);
+          // SSE will handle the response — just set waiting flag
+          setWaitingForTask(true);
+          // submitting stays true until SSE callback or 90s timeout
         } else {
-          // General query: use getHelp() server action
+          // Chat mode: use getHelp() server action directly
           const llmResult = await getHelp({
             question: userInput,
             department,
@@ -315,15 +331,15 @@ export function ChatUI({ department }: { department: string }) {
           });
 
           await loadSessionMessages(sessionId);
+          setSubmitting(false);
         }
         return true;
       } catch (err) {
         console.error("Failed to send message", err);
         setError("Sending message failed. Please try again.");
-        await loadSessionMessages(sessionId);
-        return true;
-      } finally {
+        try { await loadSessionMessages(sessionId); } catch { /* ignore */ }
         setSubmitting(false);
+        return true;
       }
     },
     [
@@ -335,143 +351,14 @@ export function ChatUI({ department }: { department: string }) {
       t,
       userIdentifier,
       submitting,
+      setActiveChatId,
+      setChatHistory,
+      setMessages,
+      setAttachedFile,
     ],
   );
 
-  const handleFileAttachClick = () => {
-    fileInputRef.current?.click();
-  };
-
-  const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
-
-    // Check if it's a document to upload to Knowledge Engine
-    const docExtensions = ['.pdf', '.doc', '.docx', '.xlsx', '.pptx', '.txt'];
-    const isDocument = docExtensions.some(ext => file.name.toLowerCase().endsWith(ext));
-
-    if (isDocument && file.size > 0) {
-      // Upload to backend Knowledge Engine
-      try {
-        setError(null);
-        const result = await chatBackend.uploadDocument(file, userIdentifier, forceDeepScan);
-        // Show success in chat
-        const uploadMessage: Message = {
-          id: Date.now(),
-          role: "bot",
-          content: `📄 Đã upload file **${result.filename}** — đang xử lý...\nID: \`${result.document_id}\``,
-        };
-        setMessages(prev => [...prev, uploadMessage]);
-      } catch (err: any) {
-        // Handle 409 Conflict (duplicate file) — ask user to overwrite
-        const errMsg = err?.message || '';
-        if (errMsg.includes('409')) {
-          try {
-            const detail = JSON.parse(errMsg.replace(/^.*?409\s*/, ''));
-            const shouldOverwrite = confirm(
-              `${detail.message}\n\nNhấn OK để ghi đè, Cancel để hủy.`
-            );
-            if (shouldOverwrite) {
-              const result = await chatBackend.uploadDocument(file, userIdentifier, forceDeepScan, true);
-              const uploadMessage: Message = {
-                id: Date.now(),
-                role: "bot",
-                content: `📄 Đã ghi đè file **${result.filename}** — đang xử lý lại...\nID: \`${result.document_id}\``,
-              };
-              setMessages(prev => [...prev, uploadMessage]);
-            } else {
-              setMessages(prev => [...prev, {
-                id: Date.now(),
-                role: "bot",
-                content: "❌ Đã hủy upload.",
-              }]);
-            }
-          } catch {
-            setError(`Upload thất bại: ${errMsg}`);
-          }
-        } else {
-          console.error('Upload failed:', err);
-          setError(`Upload thất bại: ${errMsg}`);
-        }
-      }
-      // Reset file input
-      if (event.target) event.target.value = '';
-      return;
-    }
-
-    // For images — keep the old dataUri behavior
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      setAttachedFile({
-        dataUri: reader.result as string,
-        name: file.name,
-        type: file.type,
-      });
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleSignOut = () => {
-    logout();
-    router.push("/login");
-  };
-
-  const handleNewChat = () => {
-    setActiveChatId(null);
-    setMessages([welcomeMessage()]);
-    setSearchResults([]);
-  };
-
-  const handleSelectChat = async (chatId: string) => {
-    setActiveChatId(chatId);
-    setSearchResults([]);
-    const existing = chatHistory.find((chat) => chat.id === chatId);
-    if (existing && existing.messages.length > 0) {
-      setMessages(existing.messages);
-      return;
-    }
-    await loadSessionMessages(chatId);
-  };
-
-  const handleDeleteChat = (chatId: string) => {
-    setChatHistory((prev) => prev.filter((chat) => chat.id !== chatId));
-    if (activeChatId === chatId) {
-      setActiveChatId(null);
-      setMessages([welcomeMessage()]);
-    }
-  };
-
-  const handleSearchSubmit = useCallback(async () => {
-    const query = searchTerm.trim();
-    if (!query) {
-      setSearchResults([]);
-      return;
-    }
-    setSearchLoading(true);
-    try {
-      const results = await chatBackend.semanticSearch({
-        user_id: userIdentifier ?? undefined,
-        department,
-        query,
-      });
-      setSearchResults(results);
-    } catch (err) {
-      console.error("Search error", err);
-      setError("Search failed. Please try again.");
-    } finally {
-      setSearchLoading(false);
-    }
-  }, [searchTerm, userIdentifier, department]);
-
-  const handleSearchResultSelect = async (result: SearchResult) => {
-    const sessionId = result.metadata?.session_id as string | undefined;
-    if (sessionId) {
-      await handleSelectChat(sessionId);
-    }
-  };
-
+  // ─── Render ───────────────────────────────────────────────────
   return (
     <>
       <ChatSidebar
@@ -480,9 +367,7 @@ export function ChatUI({ department }: { department: string }) {
         searchTerm={searchTerm}
         onSearchTermChange={(value) => {
           setSearchTerm(value);
-          if (!value) {
-            setSearchResults([]);
-          }
+          if (!value) setSearchResults([]);
         }}
         onSearchSubmit={handleSearchSubmit}
         searchResults={searchResults}
@@ -496,6 +381,7 @@ export function ChatUI({ department }: { department: string }) {
         t={t as any}
         loading={sessionsLoading}
         userId={userIdentifier}
+        docRefreshToken={docRefreshToken}
         onAskAboutDocument={(filename) => {
           setInput(`Hãy tóm tắt nội dung file ${filename}`);
           textareaRef.current?.focus();
@@ -524,7 +410,9 @@ export function ChatUI({ department }: { department: string }) {
             <span>{t("thinkingMessage")}</span>
           </div>
         )}
-        <ChatMessageList messages={messages} messagesEndRef={messagesEndRef} />
+        <ErrorBoundary>
+          <ChatMessageList messages={messages} messagesEndRef={messagesEndRef} />
+        </ErrorBoundary>
         <ChatComposer
           formRef={formRef}
           textareaRef={textareaRef}

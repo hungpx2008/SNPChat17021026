@@ -31,7 +31,7 @@ def consolidate_memories(self) -> dict[str, Any]:
         mem0_url = os.getenv("MEM0_URL", "http://mem0:8000")
         openai_key = os.getenv("OPENAI_API_KEY", "")
         openai_base = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
-        llm_model = os.getenv("LLM_MODEL", "openai/gpt-4o-mini")
+        llm_model = os.getenv("LLM_MODEL", "openai/gpt-5-nano")
 
         # Get all user IDs from sessions (quick DB scan)
         from sqlalchemy import create_engine, text as sql_text

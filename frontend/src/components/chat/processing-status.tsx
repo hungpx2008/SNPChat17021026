@@ -5,13 +5,9 @@ import { LoaderCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { AgentMode } from './chat-composer';
 
-const STATUS_MESSAGES: Record<AgentMode, string[]> = {
-    auto: [
-        'Đang phân tích yêu cầu...',
-        'Đang lập kế hoạch truy vấn...',
-        'Đang chọn công cụ phù hợp...',
-        'Đang tổng hợp thông tin...',
-    ],
+type ProcessingMode = Exclude<AgentMode, 'chat'>;
+
+const STATUS_MESSAGES: Record<ProcessingMode, string[]> = {
     sql: [
         'Đang phân tích câu hỏi số liệu...',
         'Đang soạn câu lệnh SQL...',
@@ -24,18 +20,15 @@ const STATUS_MESSAGES: Record<AgentMode, string[]> = {
         'Đang kiểm tra tính xác thực...',
         'Đang biên soạn câu trả lời...',
     ],
-    chat: [
-        'Đang suy nghĩ...',
-    ],
 };
 
 interface ProcessingStatusProps {
-    mode: AgentMode;
+    mode: ProcessingMode;
     className?: string;
 }
 
 export function ProcessingStatus({ mode, className }: ProcessingStatusProps) {
-    const messages = STATUS_MESSAGES[mode] || STATUS_MESSAGES.chat;
+    const messages = STATUS_MESSAGES[mode] || STATUS_MESSAGES.sql;
     const [index, setIndex] = useState(0);
 
     useEffect(() => {
