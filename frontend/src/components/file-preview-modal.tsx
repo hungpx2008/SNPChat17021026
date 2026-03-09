@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { AutoTable } from "@/components/ui/auto-table";
 import { Loader2, Search, Maximize2, Minimize2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -19,6 +18,18 @@ interface FilePreviewModalProps {
   fileName?: string | null;
   showDownload?: boolean;
 }
+
+type SearchableWindow = Window & typeof globalThis & {
+  find?: (
+    query: string,
+    caseSensitive?: boolean,
+    backwards?: boolean,
+    wrapAround?: boolean,
+    wholeWord?: boolean,
+    searchInFrames?: boolean,
+    showDialog?: boolean
+  ) => boolean;
+};
 
 export function FilePreviewModal({ open, onOpenChange, fileUrl, fileName, showDownload = false }: FilePreviewModalProps) {
   const [xlsxHtml, setXlsxHtml] = useState<string | null>(null);
@@ -128,6 +139,15 @@ export function FilePreviewModal({ open, onOpenChange, fileUrl, fileName, showDo
     return () => { isMounted = false; };
   }, [open, fileType, fileUrl]);
 
+  const findInDocument = (query: string) => {
+    if (typeof window === "undefined" || !query) {
+      return;
+    }
+
+    const searchableWindow = window as SearchableWindow;
+    searchableWindow.find?.(query, false, false, true);
+  };
+
   const renderBody = () => {
     if (!fileUrl) {
       return <p className="text-sm text-muted-foreground p-4">Không có file để xem trước.</p>;
@@ -181,13 +201,11 @@ export function FilePreviewModal({ open, onOpenChange, fileUrl, fileName, showDo
                 onChange={(e) => {
                   const val = e.target.value;
                   setDocxSearchQuery(val);
-                  if (val && typeof window !== 'undefined') {
-                    window.find(val, false, false, true);
-                  }
+                  findInDocument(val);
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && docxSearchQuery && typeof window !== 'undefined') {
-                    window.find(docxSearchQuery, false, false, true);
+                  if (e.key === 'Enter') {
+                    findInDocument(docxSearchQuery);
                   }
                 }}
                 className="pl-8 h-8 text-xs bg-muted/30 focus-visible:ring-1"

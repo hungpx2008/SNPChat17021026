@@ -9,6 +9,7 @@ const createJestConfig = nextJest({
 const customJestConfig = {
   setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
   testEnvironment: 'jest-environment-jsdom',
+  modulePathIgnorePatterns: ['<rootDir>/.next/'],
 }
 
 // createJestConfig được xuất theo cách này để đảm bảo next/jest có thể tải cấu hình Next.js
