@@ -1,7 +1,9 @@
 'use client';
 
 import type { RefObject } from "react";
+import { memo, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Bot, User, Image as ImageIcon, Volume2 } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -18,6 +20,8 @@ import type { Attachment } from "@/services/chat-backend";
  * 1. Strip SQL/Python code blocks that LLM might accidentally include
  * 2. Remove Python tracebacks (Traceback, File "...", Error: ...)
  * 3. Deduplicate citations by filename+page
+ * 4. Remove unwanted system notes
+ * 5. Remove malformed markdown table artifacts from legacy messages
  */
 function sanitizeBotContent(content: string): string {
   let text = content;
@@ -30,6 +34,12 @@ function sanitizeBotContent(content: string): string {
 
   // Strip raw error lines like "sqlalchemy.exc.OperationalError: ..."
   text = text.replace(/^[\w.]+(?:Error|Exception):.+$/gm, '');
+
+  // Remove unwanted system notes
+  text = text.replace(/💬\s*Lưu ý:\s*Đây là thông tin thô từ tài liệu[^📚]*/gi, '');
+  text = text.replace(/💬\s*Lưu ý:[^\n]*bạn có thể hỏi cụ thể hơn[^\n]*/gi, '');
+
+  // Do not auto-convert plain text to tables; this often corrupts citations/numbered text.
 
   // Deduplicate citations: **[Nguồn: file.pdf, Trang X]** (điểm: Y.YY)
   const citationRegex = /\*\*\[Nguồn:.+?\]\*\*(?:\s*\(điểm:.+?\))?/g;
@@ -48,12 +58,14 @@ function sanitizeBotContent(content: string): string {
   return text;
 }
 
+
 interface ChatMessageListProps {
   messages: Message[];
   messagesEndRef: RefObject<HTMLDivElement>;
+  onPreviewAttachment?: (att: Attachment) => void;
 }
 
-function AttachmentRenderer({ attachments }: { attachments: Attachment[] }) {
+function AttachmentRenderer({ attachments, onPreview }: { attachments: Attachment[]; onPreview?: (att: Attachment) => void }) {
   if (!attachments || attachments.length === 0) return null;
 
   return (
@@ -92,12 +104,19 @@ function AttachmentRenderer({ attachments }: { attachments: Attachment[] }) {
         }
 
         if (att.type === 'document') {
+          const handleClick = (e: React.MouseEvent) => {
+            if (onPreview) {
+              e.preventDefault();
+              onPreview(att);
+            }
+          };
           return (
             <a
               key={i}
               href={att.url}
               target="_blank"
               rel="noopener noreferrer"
+              onClick={handleClick}
               className="flex items-center gap-2 p-2 rounded-lg border border-border/50 hover:bg-accent/30 transition-colors text-xs"
             >
               📄 {att.filename || 'Tải file'}
@@ -111,7 +130,22 @@ function AttachmentRenderer({ attachments }: { attachments: Attachment[] }) {
   );
 }
 
-export function ChatMessageList({ messages, messagesEndRef }: ChatMessageListProps) {
+/** Memoized bot message renderer — sanitize only runs when content changes */
+const BotMessageContent = memo(function BotMessageContent({
+  content,
+  isLast,
+}: {
+  content: string;
+  isLast: boolean;
+}) {
+  const clean = useMemo(() => sanitizeBotContent(content), [content]);
+  if (isLast && !containsTableMarkup(clean)) {
+    return <Typewriter text={clean} speed={20} />;
+  }
+  return <LLMResponseRenderer content={clean} />;
+});
+
+export function ChatMessageList({ messages, messagesEndRef, onPreviewAttachment }: ChatMessageListProps) {
   return (
     <main className="flex-1 overflow-hidden">
       <ScrollArea className="h-full">
@@ -148,22 +182,20 @@ export function ChatMessageList({ messages, messagesEndRef }: ChatMessageListPro
                     )}
                   >
                     {typeof message.content === "string" ? (
-                      message.role === "bot" ? (() => {
-                        const clean = sanitizeBotContent(message.content);
-                        return index === messages.length - 1 && !containsTableMarkup(clean) ? (
-                          <Typewriter text={clean} speed={20} />
-                        ) : (
-                          <LLMResponseRenderer content={clean} />
-                        );
-                      })() : (
-                        <ReactMarkdown>{message.content}</ReactMarkdown>
+                      message.role === "bot" ? (
+                        <BotMessageContent
+                          content={message.content}
+                          isLast={index === messages.length - 1}
+                        />
+                      ) : (
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
                       )
                     ) : (
                       message.content
                     )}
 
                     {/* Render media attachments */}
-                    <AttachmentRenderer attachments={attachments} />
+                    <AttachmentRenderer attachments={attachments} onPreview={onPreviewAttachment} />
                   </div>
 
                   {/* Feedback + TTS buttons for bot messages */}

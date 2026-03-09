@@ -8,7 +8,6 @@ export function useFileAttachment(
   setError: (error: string | null) => void,
 ) {
   const [attachedFile, setAttachedFile] = useState<AttachedFile | null>(null);
-  const [forceDeepScan, setForceDeepScan] = useState(false);
   const [docRefreshToken, setDocRefreshToken] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -20,8 +19,8 @@ export function useFileAttachment(
     const file = event.target.files?.[0];
     if (!file) return;
 
-    // Check if it's a document to upload to Knowledge Engine
-    const docExtensions = [".pdf", ".doc", ".docx", ".xlsx", ".pptx", ".txt"];
+    // Documents and audio → upload to Knowledge Engine (Docling pipeline)
+    const docExtensions = [".pdf", ".doc", ".docx", ".xlsx", ".pptx", ".txt", ".mp3", ".wav", ".m4a", ".aac"];
     const isDocument = docExtensions.some((ext) =>
       file.name.toLowerCase().endsWith(ext),
     );
@@ -29,11 +28,7 @@ export function useFileAttachment(
     if (isDocument && file.size > 0) {
       try {
         setError(null);
-        const result = await chatBackend.uploadDocument(
-          file,
-          userIdentifier,
-          forceDeepScan,
-        );
+        const result = await chatBackend.uploadDocument(file, userIdentifier);
         const uploadMessage: Message = {
           id: Date.now(),
           role: "bot",
@@ -56,8 +51,7 @@ export function useFileAttachment(
               const result = await chatBackend.uploadDocument(
                 file,
                 userIdentifier,
-                forceDeepScan,
-                true,
+                true, // overwrite
               );
               const uploadMessage: Message = {
                 id: Date.now(),
@@ -84,7 +78,7 @@ export function useFileAttachment(
       return;
     }
 
-    // For images — keep the old dataUri behavior
+    // Images → keep dataUri for inline preview
     const reader = new FileReader();
     reader.onloadend = () => {
       setAttachedFile({
@@ -100,8 +94,6 @@ export function useFileAttachment(
     attachedFile,
     setAttachedFile,
     fileInputRef,
-    forceDeepScan,
-    setForceDeepScan,
     docRefreshToken,
     handleFileAttachClick,
     handleFileChange,

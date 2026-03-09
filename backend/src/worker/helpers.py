@@ -4,6 +4,7 @@ Shared helper functions for Celery tasks.
 These are NOT tasks themselves — just utility functions used by
 chat_tasks, data_tasks, and media_tasks.
 """
+import base64
 import json
 import logging
 import os
@@ -14,6 +15,105 @@ import redis as sync_redis
 
 logger = logging.getLogger(__name__)
 
+def _extract_text_from_image(file_path: repr) -> str:
+    """
+    Sử dụng OpenAI Vision API (hoặc tương đương qua LiteLLM) để trích xuất 
+    mô tả chi tiết từ hình ảnh (.jpg, .png).
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+    model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+
+    if not api_key:
+        logger.warning("[vlm] OPENAI_API_KEY is missing. Cannot process image.")
+        return "Không thể phân tích ảnh do thiếu API Key."
+
+    try:
+        with open(file_path, "rb") as image_file:
+            encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
+        
+        _, ext = os.path.splitext(file_path.lower())
+        mime_type = "image/jpeg" if ext in [".jpg", ".jpeg"] else "image/png"
+        
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text", 
+                            "text": "Hãy miêu tả chi tiết bức ảnh này bằng tiếng Việt. Chú ý đọc và trích xuất toàn bộ chữ viết, biểu đồ, sơ đồ có trong ảnh. Đừng bỏ sót thông tin."
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{encoded_string}",
+                                "detail": "high"
+                            }
+                        }
+                    ]
+                }
+            ],
+            "max_tokens": 1500
+        }
+
+        from src.core.http_client import get_http_client
+        headers = {"Authorization": f"Bearer {api_key}"}
+        resp = get_http_client(timeout=60.0).post(f"{base_url}/chat/completions", json=payload, headers=headers)
+        resp.raise_for_status()
+        result = resp.json()
+        description = result["choices"][0]["message"]["content"]
+        logger.info(f"[vlm] Khai thác thành công mô tả ảnh ({len(description)} chars).")
+        return description
+    except Exception as exc:
+        logger.exception(f"[vlm] Failed to process image {file_path}: {exc}")
+        return f"Lỗi xử lý ảnh: {exc}"
+
+
+def _llm_enrich_table(markdown_table: str) -> str:
+    """
+    Sử dụng LLM (Text-to-Text) để tóm tắt ý nghĩa của bảng Markdown.
+    Dùng cái này thay cho bảng gốc khi embedding sẽ tăng độ chính xác tìm kiếm.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+    model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+
+    if not api_key or len(markdown_table) < 50:
+        return markdown_table
+
+    try:
+        from src.core.http_client import get_http_client
+        headers = {"Authorization": f"Bearer {api_key}"}
+        
+        # Prompt "Vạn năng" - Tự thích nghi với loại bảng
+        system_prompt = (
+            "Bạn là trợ lý xử lý dữ liệu cho hệ thống RAG. Nhiệm vụ: Chuyển đổi bảng Markdown sau thành văn bản tự nhiên (tiếng Việt) để phục vụ tìm kiếm."
+            "\n1. Nếu là Bảng Danh Sách (Giá, Thông số kỹ thuật, Nhân sự...): Hãy viết lại chi tiết từng dòng thành câu (VD: 'Mục A có giá X', 'Ông B giữ chức vụ Y')."
+            "\n2. Nếu là Bảng Tổng Hợp (Báo cáo tài chính, Thống kê...): Hãy tóm tắt các xu hướng chính và nêu bật các con số tổng quan quan trọng nhất."
+            "\n3. Yêu cầu bắt buộc: Giữ nguyên chính xác mọi con số, tên riêng và đơn vị tính. Không được bịa đặt thông tin không có trong bảng."
+        )
+
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": markdown_table[:4000]} # Limit context
+            ],
+            "temperature": 0.0, # Nhiệt độ 0 để đảm bảo tính chính xác tuyệt đối
+            "max_tokens": 500
+        }
+        # Timeout ngắn để không làm chậm pipeline quá nhiều
+        resp = get_http_client(timeout=20.0).post(f"{base_url}/chat/completions", json=payload, headers=headers)
+        if resp.status_code == 200:
+            summary = resp.json()["choices"][0]["message"]["content"].strip()
+            # Lưu kết quả làm giàu + Bảng gốc (để tham chiếu nếu cần hiển thị)
+            return f"{summary}\n\n[Cấu trúc gốc để tham khảo:\n{markdown_table}\n]"
+        return markdown_table
+    except Exception as e:
+        logger.warning(f"[enrich] Failed to summarize table: {e}")
+        return markdown_table
 
 def publish_task_complete(session_id: str, event: str = "message_ready") -> None:
     """
@@ -33,38 +133,25 @@ def publish_task_complete(session_id: str, event: str = "message_ready") -> None
         logger.warning(f"[pubsub] Failed to publish event: {exc}")
 
 
-def _truncate_tables(text: str) -> str:
+def _process_tables_in_text(text: str) -> str:
     """
-    Replace markdown tables with concise summaries.
-    "| Col1 | Col2 |\n|---|---|\n| a | b |\n| c | d |"
-    → "Bảng 2 cột: [Col1, Col2]. 2 dòng dữ liệu."
+    Tìm các bảng Markdown trong văn bản và "làm giàu" chúng bằng LLM.
+    Thay thế logic cũ (_truncate_tables) vốn xóa bỏ dữ liệu.
     """
     table_regex = re.compile(r'((?:^\s*\|.*\|\s*(?:\n|$)){3,})', re.MULTILINE)
 
-    def summarize_table(match: re.Match) -> str:
+    def enrich_table_match(match: re.Match) -> str:
         block = match.group(1)
         lines = [l.strip() for l in block.strip().split('\n') if l.strip()]
-        if len(lines) < 2:
+        
+        # Nếu bảng nhỏ (< 4 dòng), giữ nguyên, không cần gọi LLM tốn tiền
+        if len(lines) < 4:
             return block
 
-        # Extract headers from first line
-        header_line = lines[0]
-        headers = [c.strip() for c in header_line.strip('|').split('|') if c.strip()]
+        # Gọi LLM để biến bảng thành văn bản ngữ nghĩa
+        return _llm_enrich_table(block)
 
-        # Check if second line is separator (|---|---|)
-        sep_line = lines[1] if len(lines) > 1 else ""
-        is_table = bool(re.match(r'^\s*\|[\s\-:]+\|', sep_line))
-        if not is_table:
-            return block
-
-        data_rows = len(lines) - 2  # Exclude header + separator
-        col_list = ", ".join(headers[:6])
-        if len(headers) > 6:
-            col_list += f", ... (+{len(headers) - 6} cột)"
-
-        return f"[Bảng {len(headers)} cột: {col_list}. {data_rows} dòng dữ liệu.]"
-
-    return table_regex.sub(summarize_table, text)
+    return table_regex.sub(enrich_table_match, text)
 
 
 def _smart_chunk(
@@ -79,43 +166,58 @@ def _smart_chunk(
     Splits on: section breaks → paragraphs → sentences → words
     to avoid cutting mid-row in tables or mid-number in prices.
     
-    Table truncation: If a chunk contains a markdown table, the table
-    is summarized as "Bảng N cột: [headers]. M dòng dữ liệu." to
-    save vector DB space while preserving structure metadata.
+    Table handling: Uses LLM to enrich tables into semantic text 
+    BEFORE chunking to ensure searchability of price lists.
     """
     separators = ["\n\n\n", "\n\n", "\n", ". ", ", ", " ", ""]
 
-    # Pre-process: truncate markdown tables to summaries before chunking
-    text = _truncate_tables(text)
+    original_text = text
+
+    # Pre-process: Enrich tables (Biến bảng thành văn bản) thay vì cắt bỏ
+    text = _process_tables_in_text(text)
 
     chunks: list[str] = []
     _recursive_split(text, separators, chunk_size, overlap, chunks)
 
-    # Estimate page numbers from form-feed chars OR character position
     result: list[tuple[str, int]] = []
-    char_pos = 0
-    page_breaks = [m.start() for m in re.finditer(r"\f", text)]
-
-    if page_breaks:
-        # Real page breaks found (PDF) — use exact positions
-        page_breaks = [0] + page_breaks
-        for chunk in chunks:
-            page_num = 1
-            for i, bp in enumerate(page_breaks):
-                if char_pos >= bp:
-                    page_num = i + 1
-            result.append((chunk.strip(), page_num))
-            found_pos = text.find(chunk, max(0, char_pos - 10))
-            char_pos = (found_pos if found_pos != -1 else char_pos) + len(chunk)
-    else:
-        # No form-feeds (DOCX, TXT) — estimate ~2500 chars per page
-        CHARS_PER_PAGE = 2500
-        for chunk in chunks:
-            found_pos = text.find(chunk, max(0, char_pos - 10))
-            actual_pos = found_pos if found_pos != -1 else char_pos
+    
+    # Track position in original text to estimate accurately despite truncation
+    orig_char_pos = 0
+    page_breaks = [m.start() for m in re.finditer(r"\f", original_text)]
+    
+    for chunk in chunks:
+        # To map back to original text, use the first 30 chars of the chunk
+        # (Table summaries won't match, but text around them will help anchor the position)
+        anchor = chunk[:30]
+        # Ignore custom table summaries in anchor search
+        # Nếu chunk bắt đầu bằng kết quả enrichment, tìm anchor khác
+        if "Cấu trúc gốc để tham khảo" in chunk:
+             # Fallback tìm kiếm tương đối
+             pass
+                
+        found_pos = original_text.find(anchor, max(0, orig_char_pos - 50))
+        actual_pos = found_pos if found_pos != -1 else orig_char_pos
+        
+        page_num = 1
+        
+        # 1. Check for explicit <!-- Page X --> tags near the chunk in original text
+        context_window = original_text[max(0, actual_pos - 1000):actual_pos + 1000]
+        page_tag_match = re.search(r"<!--\s*Page\s*(\d+)\s*-->", context_window, re.IGNORECASE)
+        
+        if page_tag_match:
+            page_num = int(page_tag_match.group(1))
+        # 2. Check for form feeds (\f)
+        elif page_breaks:
+            for bp in page_breaks:
+                if actual_pos >= bp:
+                    page_num += 1
+        # 3. Estimate by literal character length from original document
+        else:
+            CHARS_PER_PAGE = 2500
             page_num = max(1, (actual_pos // CHARS_PER_PAGE) + 1)
-            result.append((chunk.strip(), page_num))
-            char_pos = actual_pos + len(chunk)
+            
+        result.append((chunk.strip(), page_num))
+        orig_char_pos = actual_pos + len(chunk) // 2  # Advance anchor
 
     return result
 
@@ -184,11 +286,7 @@ def _update_document_status(
 ) -> None:
     """Update document status in PostgreSQL (sync, for Celery)."""
     try:
-        from sqlalchemy import create_engine, text
-        db_url = os.getenv("DATABASE_URL", "")
-        # Convert async URL to sync
-        sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
-        engine = create_engine(sync_url)
+        from src.core.database_pool import db_pool
 
         updates = ["status = :status", "updated_at = NOW()"]
         params: dict[str, Any] = {"doc_id": document_id, "status": status}
@@ -202,11 +300,13 @@ def _update_document_status(
         if error_message:
             updates.append("error_message = :error_message")
             params["error_message"] = error_message
+        if metadata is not None:
+            import json
+            updates.append("metadata = :metadata")
+            params["metadata"] = json.dumps(metadata)
 
         sql = f"UPDATE documents SET {', '.join(updates)} WHERE id = :doc_id"
-        with engine.connect() as conn:
-            conn.execute(text(sql), params)
-            conn.commit()
+        db_pool.execute_query(sql, params)
 
         logger.info(f"[db] Updated document {document_id} → status={status}")
     except Exception as e:

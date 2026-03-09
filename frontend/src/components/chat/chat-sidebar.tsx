@@ -14,6 +14,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarTrigger,
+  SidebarRail,
 } from "@/components/ui/sidebar";
 import {
   Tooltip,
@@ -322,6 +323,7 @@ export function ChatSidebar({
           </TooltipProvider>
         </div>
       </SidebarFooter>
+      <SidebarRail />
     </Sidebar>
   );
 }

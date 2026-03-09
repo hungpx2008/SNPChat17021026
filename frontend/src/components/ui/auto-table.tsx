@@ -10,9 +10,7 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Input } from "@/components/ui/input";
-import { ArrowUpDown, ArrowUp, ArrowDown, Search } from "lucide-react";
+import { ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import ReactMarkdown from 'react-markdown';
 
 interface TableData {
@@ -82,7 +80,6 @@ type SortDir = 'asc' | 'desc' | null;
 
 export function AutoTable({ htmlString }: AutoTableProps) {
   const [tableData, setTableData] = useState<TableData | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
   const [sortCol, setSortCol] = useState<number | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>(null);
 
@@ -90,22 +87,10 @@ export function AutoTable({ htmlString }: AutoTableProps) {
     setTableData(parseHTMLTable(htmlString));
   }, [htmlString]);
 
-  // Filtered rows
-  const filteredRows = useMemo(() => {
+  // Sorted rows
+  const sortedRows = useMemo(() => {
     if (!tableData) return [];
     let rows = tableData.rows;
-
-    // Search filter
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      rows = rows.filter(row =>
-        row.some(cell => {
-          // Strip HTML tags for search
-          const text = cell.replace(/<[^>]*>/g, '').toLowerCase();
-          return text.includes(q);
-        })
-      );
-    }
 
     // Sort
     if (sortCol !== null && sortDir) {
@@ -113,9 +98,11 @@ export function AutoTable({ htmlString }: AutoTableProps) {
         const aVal = (a[sortCol] || '').replace(/<[^>]*>/g, '').trim();
         const bVal = (b[sortCol] || '').replace(/<[^>]*>/g, '').trim();
 
-        // Try numeric comparison first
-        const aNum = parseFloat(aVal.replace(/[,.\s]/g, ''));
-        const bNum = parseFloat(bVal.replace(/[,.\s]/g, ''));
+        // Try numeric comparison first (handle Vietnamese currency format)
+        const cleanAVal = aVal.replace(/[,.\s]/g, '').replace(/VNĐ|vnđ/gi, '');
+        const cleanBVal = bVal.replace(/[,.\s]/g, '').replace(/VNĐ|vnđ/gi, '');
+        const aNum = parseFloat(cleanAVal);
+        const bNum = parseFloat(cleanBVal);
         if (!isNaN(aNum) && !isNaN(bNum)) {
           return sortDir === 'asc' ? aNum - bNum : bNum - aNum;
         }
@@ -128,7 +115,7 @@ export function AutoTable({ htmlString }: AutoTableProps) {
     }
 
     return rows;
-  }, [tableData, searchQuery, sortCol, sortDir]);
+  }, [tableData, sortCol, sortDir]);
 
   const handleSort = (colIndex: number) => {
     if (sortCol === colIndex) {
@@ -147,73 +134,54 @@ export function AutoTable({ htmlString }: AutoTableProps) {
   }
 
   return (
-    <div className="my-4 not-prose space-y-2">
-      {/* Search input — only show for tables with 3+ rows */}
-      {tableData.rows.length >= 3 && (
-        <div className="relative max-w-xs">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Tìm trong bảng..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-8 h-8 text-xs"
-          />
-        </div>
-      )}
-
-      <ScrollArea className="max-w-full overflow-x-auto rounded-lg border shadow-md">
-        <Table className="min-w-full bg-card">
-          <TableHeader className="bg-muted/50">
+    <div className="flex flex-col h-full my-4 not-prose space-y-2">
+      <Table
+        className="min-w-full bg-card chatsnp-table-container"
+        wrapperClassName="w-full flex-1 min-h-0 overflow-auto rounded-lg border shadow-md pb-2 relative"
+      >
+        <TableHeader className="bg-muted/50 sticky top-0 z-10 shadow-sm">
+          <TableRow>
+            {tableData.headers.map((header, index) => (
+              <TableHead
+                key={index}
+                className="px-4 py-3 font-bold text-muted-foreground whitespace-nowrap cursor-pointer select-none hover:bg-muted/80 transition-colors"
+                onClick={() => handleSort(index)}
+              >
+                <div className="flex items-center gap-1">
+                  {header}
+                  {sortCol === index ? (
+                    sortDir === 'asc' ? <ArrowUp size={12} className="text-primary" />
+                      : <ArrowDown size={12} className="text-primary" />
+                  ) : (
+                    <ArrowUpDown size={12} className="opacity-30" />
+                  )}
+                </div>
+              </TableHead>
+            ))}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {sortedRows.length === 0 ? (
             <TableRow>
-              {tableData.headers.map((header, index) => (
-                <TableHead
-                  key={index}
-                  className="px-4 py-3 font-bold text-muted-foreground whitespace-nowrap cursor-pointer select-none hover:bg-muted/80 transition-colors"
-                  onClick={() => handleSort(index)}
-                >
-                  <div className="flex items-center gap-1">
-                    {header}
-                    {sortCol === index ? (
-                      sortDir === 'asc' ? <ArrowUp size={12} className="text-primary" />
-                        : <ArrowDown size={12} className="text-primary" />
-                    ) : (
-                      <ArrowUpDown size={12} className="opacity-30" />
-                    )}
-                  </div>
-                </TableHead>
-              ))}
+              <TableCell colSpan={tableData.headers.length} className="text-center py-4 text-muted-foreground">
+                Không có dữ liệu
+              </TableCell>
             </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filteredRows.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={tableData.headers.length} className="text-center py-4 text-muted-foreground">
-                  Không tìm thấy kết quả
-                </TableCell>
+          ) : (
+            sortedRows.map((row, rowIndex) => (
+              <TableRow key={rowIndex} className="hover:bg-muted/30 even:bg-muted/10">
+                {row.map((cell, cellIndex) => (
+                  <TableCell
+                    key={cellIndex}
+                    className="px-4 py-3 align-top prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0"
+                    dangerouslySetInnerHTML={{ __html: cell }}
+                  />
+                ))}
               </TableRow>
-            ) : (
-              filteredRows.map((row, rowIndex) => (
-                <TableRow key={rowIndex} className="hover:bg-muted/30 even:bg-muted/10">
-                  {row.map((cell, cellIndex) => (
-                    <TableCell
-                      key={cellIndex}
-                      className="px-4 py-3 align-top prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0"
-                      dangerouslySetInnerHTML={{ __html: cell }}
-                    />
-                  ))}
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </ScrollArea>
-
-      {/* Result count */}
-      {searchQuery && (
-        <p className="text-[10px] text-muted-foreground">
-          {filteredRows.length}/{tableData.rows.length} dòng
-        </p>
-      )}
+            ))
+          )}
+        </TableBody>
+      </Table>
     </div>
   );
 }

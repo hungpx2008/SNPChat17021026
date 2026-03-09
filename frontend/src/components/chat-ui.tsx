@@ -22,6 +22,7 @@ import { ChatSidebar } from "./chat/chat-sidebar";
 import { ProcessingStatus } from "./chat/processing-status";
 import { ErrorBoundary } from "./error-boundary";
 import type { Message } from "./chat/types";
+import { FilePreviewModal } from "./file-preview-modal";
 import { chatBackend } from "../services/chat-backend";
 
 import { useChatSessions } from "@/hooks/use-chat-sessions";
@@ -57,9 +58,14 @@ export function ChatUI({ department }: { department: string }) {
   const [useInternalData, setUseInternalData] = useState(true);
   const [usePersonalData, setUsePersonalData] = useState(true);
   const [waitingForTask, setWaitingForTask] = useState(false);
+  // State riêng cho SSE: được set ngay khi dispatch task (không chờ activeChatId sync)
+  const [streamSessionId, setStreamSessionId] = useState<string | null>(null);
+  const [previewFile, setPreviewFile] = useState<{ url: string; name?: string } | null>(null);
 
   const formRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Ref để track session ID ngay lập tức, tránh stale closure khi tạo session mới
+  const activeSessionIdRef = useRef<string | null>(null);
 
   // ─── Custom hooks ──────────────────────────────────────────────
   const {
@@ -104,14 +110,21 @@ export function ChatUI({ department }: { department: string }) {
   } = useChatSearch(userIdentifier, department, setError);
 
   // ─── SSE stream for Celery task completion ─────────────────────
+  // Sync ref với state để useSessionStream dùng được session ID mới nhất
+  useEffect(() => {
+    activeSessionIdRef.current = activeChatId;
+  }, [activeChatId]);
+
   const handleSSEMessageReady = useCallback(async () => {
-    if (activeChatId) {
+    const sessionId = activeSessionIdRef.current;
+    if (sessionId) {
       try {
-        const finalMessages = await loadSessionMessages(activeChatId);
+        const finalMessages = await loadSessionMessages(sessionId);
         if (finalMessages) {
+          setMessages(finalMessages); // ← Cập nhật UI chat ngay lập tức
           setChatHistory((prev) =>
             prev.map((chat) =>
-              chat.id === activeChatId
+              chat.id === sessionId
                 ? { ...chat, messages: finalMessages }
                 : chat,
             ),
@@ -121,11 +134,12 @@ export function ChatUI({ department }: { department: string }) {
         // loadSessionMessages already logs errors
       }
       setWaitingForTask(false);
+      setStreamSessionId(null); // reset SSE session sau khi nhận xong
       setSubmitting(false);
     }
-  }, [activeChatId, loadSessionMessages, setChatHistory]);
+  }, [loadSessionMessages, setMessages, setChatHistory]);
 
-  useSessionStream(activeChatId, waitingForTask, handleSSEMessageReady);
+  useSessionStream(streamSessionId, waitingForTask, handleSSEMessageReady);
 
   // SSE fallback timeout: if no event in 90s, force reload
   useEffect(() => {
@@ -224,6 +238,7 @@ export function ChatUI({ department }: { department: string }) {
             title: sessionTitle,
           });
           sessionId = createdSession.id;
+          activeSessionIdRef.current = sessionId; // ← cập nhật ref ngay, không chờ React re-render
           setActiveChatId(sessionId);
           setChatHistory((prev) => [
             {
@@ -310,7 +325,8 @@ export function ChatUI({ department }: { department: string }) {
         const taskDispatched = (appendResult as any).task_dispatched === true;
 
         if (taskDispatched) {
-          // SSE will handle the response — just set waiting flag
+          // SSE sẽ xử lý response — set streamSessionId ngay để SSE connect đúng session
+          setStreamSessionId(sessionId);
           setWaitingForTask(true);
           // submitting stays true until SSE callback or 90s timeout
         } else {
@@ -411,7 +427,11 @@ export function ChatUI({ department }: { department: string }) {
           </div>
         )}
         <ErrorBoundary>
-          <ChatMessageList messages={messages} messagesEndRef={messagesEndRef} />
+        <ChatMessageList
+          messages={messages}
+          messagesEndRef={messagesEndRef}
+          onPreviewAttachment={(att) => setPreviewFile({ url: att.url, name: att.filename })}
+        />
         </ErrorBoundary>
         <ChatComposer
           formRef={formRef}
@@ -430,6 +450,14 @@ export function ChatUI({ department }: { department: string }) {
           onModeChange={setAgentMode}
         />
       </SidebarInset>
+
+      {/* File preview modal */}
+      <FilePreviewModal
+        open={!!previewFile}
+        onOpenChange={(open) => !open && setPreviewFile(null)}
+        fileUrl={previewFile?.url || null}
+        fileName={previewFile?.name || ""}
+      />
     </>
   );
 }

@@ -17,6 +17,20 @@ x-common-env: &common-env
   OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
   OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+  # AI Model Configuration
+  LLM_MODEL: ${LLM_MODEL:-openai/gpt-4o-mini}
+  # Docling chunking & table serializer tuning
+  # Model: AITeamVN/Vietnamese_Embedding_v2 (BAAI/bge-m3 base, max_seq=2048)
+  # 768 = sweet spot giữ bảng giá nhiều hàng mà vẫn đảm bảo retrieval precision
+  DOCLING_CHUNK_MAX_TOKENS: ${DOCLING_CHUNK_MAX_TOKENS:-768}
+  DOCLING_CHUNK_MERGE_PEERS: ${DOCLING_CHUNK_MERGE_PEERS:-true}
+  DOCLING_TABLE_MARKDOWN_MAX_COLS: ${DOCLING_TABLE_MARKDOWN_MAX_COLS:-4}
+  DOCLING_TABLE_MARKDOWN_MAX_CELLS: ${DOCLING_TABLE_MARKDOWN_MAX_CELLS:-36}
+  DOCLING_TABLE_GROUP_KEY_HINTS: ${DOCLING_TABLE_GROUP_KEY_HINTS:-type,category,item,service,description,name,code,id,loai,muc,dich vu}
+  DOCLING_TABLE_NORMALIZE_VALUES: ${DOCLING_TABLE_NORMALIZE_VALUES:-true}
+  DOCLING_PREFIX_HEADING_ROWKEY: ${DOCLING_PREFIX_HEADING_ROWKEY:-true}
+  DOCLING_GROUP_LOCK_ENABLED: ${DOCLING_GROUP_LOCK_ENABLED:-true}
+  DOCLING_GROUP_LOCK_MAX_CHARS: ${DOCLING_GROUP_LOCK_MAX_CHARS:-2800}
 
 services:
   # ==========================================================================
@@ -90,7 +104,7 @@ services:
       HF_HOME: /root/.cache/huggingface
       HF_TOKEN: ${HF_TOKEN:-}
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
-      LLM_MODEL: ${LLM_MODEL:-openai/gpt-5-nano}
+      LLM_MODEL: ${LLM_MODEL:-openai/gpt-4o-mini}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
@@ -135,6 +149,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-http://localhost:8000}
     container_name: chatsnp-frontend
     restart: unless-stopped
     environment:
@@ -144,7 +160,7 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
-      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-openai/gpt-5-nano}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-openai/gpt-4o-mini}
     ports:
       - "3000:3000"
     depends_on:
@@ -235,6 +251,14 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: chatsnp_cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token eyJhIjoiNjRiZTNhY2RiNWEyNGQ3ZTU3NDYyZWU3MmE0M2YxYzEiLCJ0IjoiODRhYWZhZTktMDFlMC00MWE0LThiODYtZDg3NDY4NWRmOTVmIiwicyI6IlpHWTRZMlV5TkRndFptVXlPQzAwT1dGbExXRTVPR0V0T1RjeU5qUTRNamcwTldaayJ9
+    networks:
+      - default
 
 # ==========================================================================
 # 💾 VOLUMES

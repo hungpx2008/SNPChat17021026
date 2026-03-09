@@ -101,7 +101,6 @@ def run_sql_query(
     """
     logger.info(f"[data_batch] SQL query for session {session_id}: {question[:50]}...")
     try:
-        import httpx
         from src.core.vanna_setup import get_vanna
         vn = get_vanna()
         if not vn:
@@ -125,7 +124,16 @@ def run_sql_query(
             prompt = f"Question: {question}\nInitial SQL Suggestion: {initial_sql}"
             
             import asyncio
-            agent_run = asyncio.run(sql_agent.run(prompt))
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        agent_run = pool.submit(asyncio.run, sql_agent.run(prompt)).result()
+                else:
+                    agent_run = loop.run_until_complete(sql_agent.run(prompt))
+            except RuntimeError:
+                agent_run = asyncio.run(sql_agent.run(prompt))
             
             sql = agent_run.output.sql
             explanation = agent_run.output.explanation
@@ -204,10 +212,10 @@ def run_sql_query(
                 "role": "assistant",
                 "metadata": {"attachments": attachments} if attachments else {},
             }
-            with httpx.Client() as client:
-                resp = client.post(api_url, json=payload, timeout=10.0)
-                resp.raise_for_status()
-                logger.info(f"Saved message via API: {resp.status_code}")
+            from src.core.http_client import get_http_client
+            resp = get_http_client(timeout=10.0).post(api_url, json=payload)
+            resp.raise_for_status()
+            logger.info(f"Saved message via API: {resp.status_code}")
 
         except Exception as e:
             logger.error(f"Failed to save message via API: {e}")
@@ -227,15 +235,14 @@ def run_sql_query(
         logger.exception(f"Error in SQL query: {exc}")
         # Save Vietnamese error message — NEVER expose SQL/Python tracebacks to user
         try:
-            import httpx
-            with httpx.Client(timeout=10.0) as client:
-                client.post(
-                    f"{BACKEND_INTERNAL_URL}/sessions/{session_id}/messages",
-                    json={
-                        "content": "Xin lỗi Đại ca, hệ thống gặp sự cố khi truy vấn dữ liệu. Vui lòng thử lại sau ạ.",
-                        "role": "assistant",
-                    },
-                )
+            from src.core.http_client import get_http_client
+            get_http_client(timeout=10.0).post(
+                f"{BACKEND_INTERNAL_URL}/sessions/{session_id}/messages",
+                json={
+                    "content": "Xin lỗi Đại ca, hệ thống gặp sự cố khi truy vấn dữ liệu. Vui lòng thử lại sau ạ.",
+                    "role": "assistant",
+                },
+            )
         except Exception:
             pass
         # Still notify frontend so it stops waiting

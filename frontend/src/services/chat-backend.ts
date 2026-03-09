@@ -112,7 +112,7 @@ export interface SearchResult {
 export interface DocumentInfo {
   id: string;
   filename: string;
-  status: 'processing' | 'awaiting_choice' | 'ready' | 'error';
+  status: 'processing' | 'ready' | 'error';
   chunk_count: number;
   extractor_used: string | null;
   error_message: string | null;
@@ -178,13 +178,11 @@ export const chatBackend = {
   async uploadDocument(
     file: File,
     userId: string,
-    forceDeepScan: boolean = false,
     overwrite: boolean = false,
   ): Promise<{ document_id: string; filename: string; status: string; message: string }> {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('user_id', userId);
-    formData.append('force_deep_scan', String(forceDeepScan));
     if (overwrite) {
       formData.append('overwrite', 'true');
     }
@@ -233,17 +231,6 @@ export const chatBackend = {
     return request<{ status: string; message: string }>(`/upload/${documentId}/cancel`, {
       method: 'DELETE',
     });
-  },
-
-  async chooseDocumentEngine(
-    documentId: string,
-    engine: 'kreuzberg' | 'docling',
-  ): Promise<{ status: string; engine: string; document_id: string; message: string }> {
-    return request<{ status: string; engine: string; document_id: string; message: string }>(
-      `/upload/${documentId}/process`,
-      { method: 'POST' },
-      { engine },
-    );
   },
 
   // ----- Feedback API -----

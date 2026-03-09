@@ -18,7 +18,6 @@ from src.repositories.sessions import SessionRepository
 from src.schemas.schemas import MessageCreate, SearchQuery
 
 
-import httpx
 from src.worker.tasks import process_chat_response, store_memory
 
 logger = logging.getLogger(__name__)
@@ -207,7 +206,7 @@ class ChatService:
 
         combined = convert_qdrant(chunk_results) + convert_mem0(mem0_results)
         # Filter by minimum score threshold (unified across sources)
-        SCORE_THRESHOLD = 0.45
+        SCORE_THRESHOLD = 0.35
         combined = [item for item in combined if item["score"] >= SCORE_THRESHOLD]
         combined.sort(key=lambda item: item["score"], reverse=True)
         return combined[: query.limit]

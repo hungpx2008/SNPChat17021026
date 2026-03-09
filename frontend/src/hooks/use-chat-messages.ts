@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { chatBackend, type BackendMessage } from "@/services/chat-backend";
 import { AttachmentPreview } from "@/components/chat/attachment-preview";
 import type { AttachedFile, Message } from "@/components/chat/types";
+import { type TranslationKey } from "@/lib/translations";
 import React from "react";
 
-type TranslateFn = (key: string) => string;
+type TranslateFn = (key: TranslationKey) => string;
 
 export function useChatMessages(t: TranslateFn, department: string) {
   const welcomeMessage = useCallback(
@@ -64,10 +65,10 @@ export function useChatMessages(t: TranslateFn, department: string) {
   );
 
   const loadSessionMessages = useCallback(
-    async (sessionId: string) => {
+    async (sessionId: string, limit = 100) => {
       setMessagesLoading(true);
       try {
-        const session = await chatBackend.fetchSession(sessionId);
+        const session = await chatBackend.fetchSession(sessionId, { limit });
         const mapped = session.messages.map(mapBackendMessage);
         const finalMessages = mapped.length > 0 ? mapped : [welcomeMessage()];
         setMessages(finalMessages);

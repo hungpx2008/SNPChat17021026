@@ -69,23 +69,22 @@ export async function getHelp({
       let contextResults: any[] = [];
       let mem0Memories: any[] = [];
 
-      // Run semantic search + direct Mem0 memory fetch in parallel
+      // Run semantic search once + direct Mem0 memory fetch in parallel
       const [searchResult, memoryResult] = await Promise.allSettled([
         chatBackend.semanticSearch({
           user_id: memoryUserId,
           department,
           query: question,
-          limit: 5,
+          limit: 6,
         }),
         (async () => {
-          // Direct Mem0 get_all — guaranteed to return ALL user memories
           const mem = await getMemory();
           return mem.search(question, { user_id: memoryUserId, limit: 10 });
         })(),
       ]);
 
       if (searchResult.status === 'fulfilled') {
-        contextResults = searchResult.value;
+        contextResults = searchResult.value || [];
       } else {
         console.error("[getHelp] Semantic search failed", searchResult.reason);
       }
@@ -113,20 +112,8 @@ export async function getHelp({
         console.error("[getHelp] Could not fetch session", error);
       }
 
-      // Tier 2: 3 semantically relevant old conversation chunks
-      let relevantOldChunks: any[] = [];
-      try {
-        const searchResults = await chatBackend.semanticSearch({
-          user_id: memoryUserId,
-          department,
-          query: question,
-          limit: 3,
-        });
-        // Only use short_term (chat_chunks) results, not long_term
-        relevantOldChunks = (searchResults || []).filter((r: any) => r.source === 'short_term');
-      } catch {
-        // Search failure is non-critical
-      }
+      // Tier 2: from single semantic search above (short_term only)
+      const relevantOldChunks = (contextResults || []).filter((r: any) => r.source === 'short_term').slice(0, 3);
 
       const contextBlocks: ContextBlock[] = [];
 

@@ -1,8 +1,9 @@
 import { useCallback, useState } from "react";
 import { chatBackend } from "@/services/chat-backend";
 import type { ChatSession, Message } from "@/components/chat/types";
+import { type TranslationKey } from "@/lib/translations";
 
-type TranslateFn = (key: string) => string;
+type TranslateFn = (key: TranslationKey) => string;
 
 export function useChatSessions(
   userIdentifier: string,
@@ -48,7 +49,7 @@ export function useChatSessions(
   const handleSelectChat = useCallback(
     async (
       chatId: string,
-      loadSessionMessages: (id: string) => Promise<void>,
+      loadSessionMessages: (id: string) => Promise<Message[] | void>,
       setMessages: (msgs: Message[]) => void,
       clearSearch: () => void,
     ) => {

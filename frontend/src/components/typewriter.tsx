@@ -3,6 +3,7 @@
 
 import { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 export function Typewriter({ text, speed = 20 }: { text: string, speed?: number }) {
   const [displayedText, setDisplayedText] = useState('');
@@ -22,5 +23,5 @@ export function Typewriter({ text, speed = 20 }: { text: string, speed?: number 
     }
   }, [text, speed]);
 
-  return <div className="prose prose-sm max-w-none"><ReactMarkdown>{displayedText}</ReactMarkdown></div>;
+  return <div className="prose prose-sm max-w-none"><ReactMarkdown remarkPlugins={[remarkGfm]}>{displayedText}</ReactMarkdown></div>;
 }

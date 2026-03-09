@@ -24,7 +24,14 @@ class Settings(BaseSettings):
     openrouter_api_key: str | None = Field(None, alias="OPENROUTER_API_KEY")
     llm_model: str = Field("openai/gpt-5-nano", alias="LLM_MODEL")
 
-    allowed_origins: Any = Field(default_factory=lambda: ["*"], alias="CORS_ALLOW_ORIGINS")
+    allowed_origins: Any = Field(
+        default_factory=lambda: [
+            "http://localhost:3000",
+            "http://localhost:9002",
+            "https://chatsnp2.cntt-snp.online",
+        ],
+        alias="CORS_ALLOW_ORIGINS",
+    )
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="allow")
 

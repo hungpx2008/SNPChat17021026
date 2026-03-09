@@ -13,7 +13,6 @@ Uses lazy initialization to avoid crash when Postgres/Qdrant not ready at import
 import logging
 import os
 
-import httpx
 from vanna.legacy.openai import OpenAI_Chat
 from vanna.legacy.qdrant import Qdrant_VectorStore
 from qdrant_client import QdrantClient
@@ -45,13 +44,13 @@ class CustomVanna(Qdrant_VectorStore, OpenAI_Chat):
             return [0.0] * VANNA_EMBEDDING_DIM
 
         try:
-            with httpx.Client(timeout=30.0) as client:
-                resp = client.post(
-                    f"{self._mem0_url.rstrip('/')}/embed",
-                    json={"text": data},
-                )
-                resp.raise_for_status()
-                return resp.json()["vector"]
+            from src.core.http_client import get_http_client
+            resp = get_http_client(timeout=30.0).post(
+                f"{self._mem0_url.rstrip('/')}/embed",
+                json={"text": data},
+            )
+            resp.raise_for_status()
+            return resp.json()["vector"]
         except Exception as e:
             logger.error(f"[vanna] Embedding failed via Mem0: {e}")
             raise

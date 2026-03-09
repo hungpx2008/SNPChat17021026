@@ -6,7 +6,7 @@ Re-exports all tasks from split modules so existing import paths work unchanged.
 3 Queues:
   - chat_priority : process_chat_response, store_memory, rag_document_search, process_feedback
   - data_batch    : run_sql_query, sync_data
-  - media_process : generate_chart, process_document, text_to_speech
+  - media_process : process_document, transcribe_audio, generate_chart, text_to_speech
 """
 
 # Re-export all tasks so `from src.worker.tasks import X` keeps working
@@ -22,10 +22,9 @@ from .data_tasks import (  # noqa: F401
     sync_data,
 )
 from .media_tasks import (  # noqa: F401
-    analyze_document,
-    process_document_with_engine,
-    generate_chart,
     process_document,
+    transcribe_audio,
+    generate_chart,
     text_to_speech,
 )
 from .gardener_tasks import (  # noqa: F401
