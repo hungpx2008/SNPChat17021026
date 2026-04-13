@@ -80,18 +80,23 @@ class HybridSearchService:
 
     def search(
         self,
-        query: str,
+        query: str | list[str],
         user_id: str | None = None,
         department: str | None = None,
         limit: int = 5,
         score_threshold: float = 0.0,
     ) -> list[SearchResult]:
-        """Run hybrid search: semantic + lexical in parallel, fuse with RRF.
+        """Run hybrid search with single query or multiple sub-queries.
+
+        When query is a list (from QueryEnhancer decomposition):
+          1. Run _single_search for each sub-query in parallel
+          2. Merge results across sub-queries by doc_id (keep max score)
+          3. Sort by score descending, return top-limit
 
         Parameters
         ----------
-        query : str
-            The search query.
+        query : str | list[str]
+            Single search query or list of sub-queries.
         user_id, department : str | None
             Access control filters.
         limit : int
@@ -104,13 +109,109 @@ class HybridSearchService:
         list[SearchResult]
             Top results sorted by fused RRF + boost score.
         """
+        # Handle list of sub-queries (from QueryEnhancer decomposition)
+        if isinstance(query, list):
+            if not query:
+                return []
+
+            # Single-item list: treat as plain string
+            if len(query) == 1:
+                return self._single_search(
+                    query=query[0],
+                    user_id=user_id,
+                    department=department,
+                    limit=limit,
+                    score_threshold=score_threshold,
+                )
+
+            # Multiple sub-queries: search in parallel, merge results
+            return self._multi_query_search(
+                queries=query,
+                user_id=user_id,
+                department=department,
+                limit=limit,
+                score_threshold=score_threshold,
+            )
+
+        # Plain string query
+        return self._single_search(
+            query=query,
+            user_id=user_id,
+            department=department,
+            limit=limit,
+            score_threshold=score_threshold,
+        )
+
+    def _multi_query_search(
+        self,
+        queries: list[str],
+        user_id: str | None,
+        department: str | None,
+        limit: int,
+        score_threshold: float,
+    ) -> list[SearchResult]:
+        """Search multiple sub-queries in parallel and merge results.
+
+        Dedup by doc_id: when the same document appears in results from
+        multiple sub-queries, keep the one with the highest score.
+        """
+        logger.info(
+            f"[HybridSearch] Multi-query search: {len(queries)} sub-queries"
+        )
+
+        # Search each sub-query in parallel
+        with ThreadPoolExecutor(max_workers=min(len(queries), 4)) as executor:
+            futures = [
+                executor.submit(
+                    self._single_search,
+                    query=q,
+                    user_id=user_id,
+                    department=department,
+                    limit=limit,  # Get full limit per sub-query before merge
+                    score_threshold=score_threshold,
+                )
+                for q in queries
+            ]
+            all_results: list[list[SearchResult]] = [f.result() for f in futures]
+
+        # Merge by doc_id: keep max score
+        merged: dict[str, SearchResult] = {}
+        for results in all_results:
+            for result in results:
+                doc_id = result.doc_id
+                if doc_id not in merged or result.score > merged[doc_id].score:
+                    merged[doc_id] = result
+
+        # Sort by score descending, return top-limit
+        sorted_results = sorted(merged.values(), key=lambda r: r.score, reverse=True)
+
+        logger.info(
+            f"[HybridSearch] Multi-query merged: "
+            f"{sum(len(r) for r in all_results)} total → "
+            f"{len(sorted_results)} unique docs"
+        )
+
+        return sorted_results[:limit]
+
+    def _single_search(
+        self,
+        query: str,
+        user_id: str | None = None,
+        department: str | None = None,
+        limit: int = 5,
+        score_threshold: float = 0.0,
+    ) -> list[SearchResult]:
+        """Run hybrid search for a single query: semantic + lexical + RRF fusion.
+
+        This is the original search() implementation, refactored into a private
+        method so search() can dispatch to either single or multi-query mode.
+        """
         if not query or not query.strip():
             return []
 
         logger.info(f"[HybridSearch] Query: {query[:80]}...")
 
         # Run semantic + lexical in parallel using ThreadPoolExecutor
-        # (Celery tasks are sync, so we use threads)
         with ThreadPoolExecutor(max_workers=2) as executor:
             semantic_future = executor.submit(
                 self._semantic_search, query, user_id, department, score_threshold
