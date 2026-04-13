@@ -30,6 +30,7 @@ import { useChatMessages } from "@/hooks/use-chat-messages";
 import { useFileAttachment } from "@/hooks/use-file-attachment";
 import { useChatSearch } from "@/hooks/use-chat-search";
 import { useSessionStream } from "@/hooks/use-session-stream";
+import { useConversationTree } from "@/hooks/use-conversation-tree";
 
 export function ChatUI({ department }: { department: string }) {
   const { t, language, setLanguage } = useLanguage();
@@ -75,6 +76,7 @@ export function ChatUI({ department }: { department: string }) {
     messagesEndRef,
     loadSessionMessages,
     welcomeMessage,
+    mapBackendMessage,
     resetMessages,
   } = useChatMessages(t, department);
 
@@ -108,6 +110,19 @@ export function ChatUI({ department }: { department: string }) {
     handleSearchSubmit,
     clearSearch,
   } = useChatSearch(userIdentifier, department, setError);
+
+  // ─── Conversation branching ───────────────────────────────────
+  const {
+    branchInfoMap,
+    editingMessageId,
+    branchLoading,
+    fetchAllBranchInfo,
+    navigateBranch,
+    editMessage,
+    regenerateMessage,
+    startEditing,
+    cancelEditing,
+  } = useConversationTree(activeChatId, setMessages, mapBackendMessage);
 
   // ─── SSE stream for Celery task completion ─────────────────────
   // Sync ref với state để useSessionStream dùng được session ID mới nhất
@@ -157,6 +172,43 @@ export function ChatUI({ department }: { department: string }) {
     }, 90_000);
     return () => clearTimeout(timer);
   }, [waitingForTask, activeChatId, loadSessionMessages]);
+
+  // ─── Fetch branch info when session/messages change ───────────
+  useEffect(() => {
+    if (activeChatId && messages.length > 0) {
+      fetchAllBranchInfo(messages);
+    }
+  }, [activeChatId, messages, fetchAllBranchInfo]);
+
+  // ─── Branching handler callbacks ──────────────────────────────
+  const handleNavigateBranch = useCallback(
+    async (messageId: string, direction: "prev" | "next") => {
+      await navigateBranch(messageId, direction);
+    },
+    [navigateBranch],
+  );
+
+  const handleEditMessage = useCallback(
+    async (messageId: string, newContent: string) => {
+      const success = await editMessage(messageId, newContent);
+      if (success && activeChatId) {
+        setStreamSessionId(activeChatId);
+        setWaitingForTask(true);
+      }
+    },
+    [editMessage, activeChatId],
+  );
+
+  const handleRegenerateMessage = useCallback(
+    async (messageId: string) => {
+      const success = await regenerateMessage(messageId);
+      if (success && activeChatId) {
+        setStreamSessionId(activeChatId);
+        setWaitingForTask(true);
+      }
+    },
+    [regenerateMessage, activeChatId],
+  );
 
   // ─── Auto-resize textarea ──────────────────────────────────────
   useEffect(() => {
@@ -431,6 +483,14 @@ export function ChatUI({ department }: { department: string }) {
           messages={messages}
           messagesEndRef={messagesEndRef}
           onPreviewAttachment={(att) => setPreviewFile({ url: att.url, name: att.filename })}
+          branchInfoMap={branchInfoMap}
+          onNavigateBranch={handleNavigateBranch}
+          onEditMessage={handleEditMessage}
+          onRegenerateMessage={handleRegenerateMessage}
+          editingMessageId={editingMessageId}
+          onStartEdit={startEditing}
+          onCancelEdit={cancelEditing}
+          branchLoading={branchLoading}
         />
         </ErrorBoundary>
         <ChatComposer
