@@ -195,7 +195,7 @@ class DoclingProcessor:
 
         # Derive a safe max_chars from token budget: assume ~3 chars/token (conservative)
         # This prevents merged chunks from silently exceeding the embedding model's max_tokens.
-        max_tokens = int(os.getenv("DOCLING_CHUNK_MAX_TOKENS", "512"))
+        max_tokens = int(os.getenv("DOCLING_CHUNK_MAX_TOKENS", "2048"))
         token_safe_max_chars = max_tokens * 3  # ~3 chars/token (conservative for Vietnamese)
         effective_max_chars = min(max_chars, token_safe_max_chars)
 
@@ -480,7 +480,7 @@ class DoclingProcessor:
                     params=MarkdownParams(image_placeholder="<!-- image -->"),
                 )
 
-        max_tokens_raw = os.getenv("DOCLING_CHUNK_MAX_TOKENS", "512")
+        max_tokens_raw = os.getenv("DOCLING_CHUNK_MAX_TOKENS", "2048")
         merge_peers_raw = os.getenv("DOCLING_CHUNK_MERGE_PEERS", "true")
         preferred_model = os.getenv("DOCLING_TOKENIZER_MODEL")
         embed_model = os.getenv("EMBEDDING_MODEL")
