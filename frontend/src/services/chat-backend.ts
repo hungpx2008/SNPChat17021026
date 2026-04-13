@@ -92,6 +92,9 @@ export interface BackendMessage {
   content: string;
   metadata?: Record<string, unknown>;
   created_at: string;
+  parent_message_id?: string | null;
+  branch_index?: number;
+  is_active_branch?: boolean;
 }
 
 export interface BackendSessionWithMessages extends BackendSession {
@@ -124,6 +127,29 @@ export interface Attachment {
   type: 'chart' | 'audio' | 'document';
   url: string;
   filename?: string;
+}
+
+export interface BranchInfo {
+  current_index: number;
+  total_branches: number;
+  sibling_ids: string[];
+  fork_point_id: string | null;
+}
+
+export interface TreeNode {
+  id: string;
+  role: string;
+  content: string;
+  parent_id: string | null;
+  branch_index: number;
+  is_active: boolean;
+  created_at: string;
+  children: TreeNode[];
+}
+
+export interface ConversationTree {
+  session_id: string;
+  roots: TreeNode[];
 }
 
 export const chatBackend = {
@@ -253,6 +279,52 @@ export const chatBackend = {
         reason: reason || undefined,
       }),
     });
+  },
+
+  // ----- Branching APIs -----
+
+  async editMessage(
+    sessionId: string,
+    messageId: string,
+    content: string,
+  ): Promise<BackendMessage> {
+    return request<BackendMessage>(`/sessions/${sessionId}/messages/${messageId}/edit`, {
+      method: 'POST',
+      body: JSON.stringify({ content }),
+    });
+  },
+
+  async regenerateMessage(
+    sessionId: string,
+    messageId: string,
+  ): Promise<BackendMessage> {
+    return request<BackendMessage>(`/sessions/${sessionId}/messages/${messageId}/regenerate`, {
+      method: 'POST',
+    });
+  },
+
+  async getBranchInfo(
+    sessionId: string,
+    messageId: string,
+  ): Promise<BranchInfo> {
+    return request<BranchInfo>(`/sessions/${sessionId}/messages/${messageId}/branches`);
+  },
+
+  async navigateBranch(
+    sessionId: string,
+    messageId: string,
+    direction: 'prev' | 'next',
+  ): Promise<BackendMessage[]> {
+    return request<BackendMessage[]>(`/sessions/${sessionId}/messages/${messageId}/navigate`, {
+      method: 'POST',
+      body: JSON.stringify({ direction }),
+    });
+  },
+
+  async getConversationTree(
+    sessionId: string,
+  ): Promise<ConversationTree> {
+    return request<ConversationTree>(`/sessions/${sessionId}/tree`);
   },
 };
 
