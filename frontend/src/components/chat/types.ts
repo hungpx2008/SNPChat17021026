@@ -10,6 +10,9 @@ export interface Message {
     attachments?: Attachment[];
     [key: string]: any;
   };
+  parentMessageId?: string;
+  branchIndex?: number;
+  isActiveBranch?: boolean;
 }
 
 export interface ChatSession {
