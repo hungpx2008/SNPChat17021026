@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import get_db_session
@@ -169,3 +170,60 @@ async def list_qdrant_points(
         payload = point.payload if isinstance(point.payload, dict) else {}
         results.append(QdrantPointSchema(id=point_id, payload=payload))
     return results
+
+
+@router.post("/reindex/{document_id}")
+async def reindex_document(
+    document_id: str,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Re-process an existing document with parent-child chunking.
+
+    Deletes existing vectors for this document, then re-runs the
+    processing pipeline to create parent-child chunks.
+    """
+    from sqlalchemy import select
+    from src.models.models import Document
+
+    stmt = select(Document).where(Document.id == document_id)
+    result = await db.execute(stmt)
+    doc = result.scalar_one_or_none()
+
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if not os.path.exists(doc.file_path):
+        raise HTTPException(status_code=404, detail="Source file no longer exists on disk")
+
+    # Delete existing vectors for this document from Qdrant
+    from qdrant_client.http import models as qmodels
+    qdrant = get_qdrant_client()
+    qdrant.delete(
+        collection_name="port_knowledge",
+        points_selector=qmodels.FilterSelector(
+            filter=qmodels.Filter(
+                must=[qmodels.FieldCondition(
+                    key="document_id",
+                    match=qmodels.MatchValue(value=document_id),
+                )]
+            )
+        ),
+    )
+
+    # Delete existing parent chunks from PostgreSQL
+    from src.core.database_pool import db_pool
+    db_pool.execute_query(
+        "DELETE FROM chunk_parents WHERE document_id = :doc_id",
+        {"doc_id": document_id},
+    )
+
+    # Re-dispatch processing task
+    from src.worker.tasks import process_document
+    process_document.delay(
+        file_path=doc.file_path,
+        user_id=doc.user_id,
+        original_filename=doc.filename,
+        document_id=str(doc.id),
+    )
+
+    return {"status": "reindex_started", "document_id": document_id}
