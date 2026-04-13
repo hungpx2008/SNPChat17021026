@@ -166,14 +166,24 @@ def _do_full_processing(
     """
     Shared embedding + upsert pipeline.
     Called by process_document after text/chunks are ready.
+
+    When prechunked_chunks is provided (Docling path), uses parent-child
+    chunking: Docling chunks become parents (saved to PostgreSQL), each
+    parent is split into smaller children for embedding into Qdrant.
     """
     from .helpers import _smart_chunk, _update_document_status
+    from src.services.chunk_splitter import split_into_children
+    from src.services.parent_chunk_store import save_parent_chunks
 
-    # 1. Chunking
+    # 1. Chunking — parent-child for Docling, flat for VLM/fallback
+    chunks_with_pages: list[tuple[str, int]] = []
     chunk_payload_meta: list[dict[str, Any]] = []
+    use_parent_child = bool(prechunked_chunks)
+
     if prechunked_chunks:
-        # Use Docling-native semantic chunks
-        chunks_with_pages: list[tuple[str, int]] = []
+        # ── Docling path: parent-child chunking ──
+        # Step 1a: Build parent_data from Docling's semantic chunks
+        parent_data: list[dict[str, Any]] = []
         for item in prechunked_chunks:
             text = (item.get("text") or "").strip()
             if not text:
@@ -183,14 +193,59 @@ def _do_full_processing(
                 page_num = max(1, int(raw_page) if raw_page is not None else 1)
             except Exception:
                 page_num = 1
-            chunks_with_pages.append((text, page_num))
-            chunk_payload_meta.append({
+            parent_data.append({
+                "content": text,
+                "page_number": page_num,
                 "headings": item.get("headings") or [],
-                "row_keys": item.get("row_keys") or [],
+                "metadata": {
+                    "row_keys": item.get("row_keys") or [],
+                },
             })
-        logger.info(f"[chunking] Using {len(chunks_with_pages)} Docling-native chunks for {filename}")
+
+        if not parent_data:
+            raise ValueError(f"No valid parent chunks from Docling for {filename}")
+
+        # Step 1b: Save parents to PostgreSQL
+        parent_ids = save_parent_chunks(document_id or "", parent_data)
+        logger.info(
+            f"[chunking] Saved {len(parent_ids)} parent chunks to PostgreSQL for {filename}"
+        )
+
+        # Step 1c: Split each parent into children
+        all_children: list[dict[str, Any]] = []
+        for parent, parent_id in zip(parent_data, parent_ids):
+            parent_meta = {
+                "page_number": parent["page_number"],
+                "headings": parent["headings"],
+                "row_keys": parent["metadata"].get("row_keys", []),
+            }
+            children = split_into_children(
+                parent_text=parent["content"],
+                parent_id=parent_id,
+                parent_meta=parent_meta,
+            )
+            all_children.extend(children)
+
+        # Step 1d: Build chunks_with_pages and payload meta from children
+        for child in all_children:
+            child_text = child.get("text", "").strip()
+            if not child_text:
+                continue
+            child_page = child.get("page", 1)
+            chunks_with_pages.append((child_text, child_page))
+            chunk_payload_meta.append({
+                "headings": child.get("headings") or [],
+                "row_keys": child.get("row_keys") or [],
+                "parent_id": child.get("parent_id", ""),
+                "child_chunk_index": child.get("chunk_index", 0),
+            })
+
+        logger.info(
+            f"[chunking] {len(parent_data)} parents → {len(chunks_with_pages)} "
+            f"children for {filename}"
+        )
     else:
-        # Fallback: smart_chunk for VLM image descriptions
+        # ── Fallback: flat chunks for VLM image descriptions ──
         chunks_with_pages = _smart_chunk(extracted_text, chunk_size=512, overlap=50)
         chunk_payload_meta = [{} for _ in chunks_with_pages]
         logger.info(f"[chunking] Smart-chunked {len(chunks_with_pages)} chunks for {filename}")
@@ -236,6 +291,11 @@ def _do_full_processing(
         row_keys = meta_for_chunk.get("row_keys")
         if isinstance(row_keys, list) and row_keys:
             payload["row_keys"] = row_keys
+        # Parent-child metadata for 2-tier retrieval
+        parent_id = meta_for_chunk.get("parent_id", "")
+        if parent_id:
+            payload["parent_id"] = parent_id
+            payload["is_child"] = True
         payloads.append(payload)
 
     # 4. Upsert to Qdrant
@@ -243,12 +303,35 @@ def _do_full_processing(
     upsert_vectors("port_knowledge", payloads, vectors, ids=vector_ids)
     logger.info(f"[qdrant] Upserted {len(payloads)} vectors for {filename}")
 
+    # 4b. Index into Whoosh for BM25 lexical search (Phase 4: Hybrid Search)
+    try:
+        from src.services.search.lexical_search import LexicalSearchService
+        lexical = LexicalSearchService()
+        docs_to_index = []
+        for vid, payload in zip(vector_ids, payloads):
+            headings = payload.get("headings", [])
+            tags = ",".join(headings) if isinstance(headings, list) else ""
+            docs_to_index.append({
+                "doc_id": vid,
+                "title": filename,
+                "content": payload.get("text", ""),
+                "tags": tags,
+                "department": payload.get("department", "") or "",
+                "user_id": payload.get("user_id", "") or "",
+            })
+        indexed = lexical.index_documents_batch(docs_to_index)
+        logger.info(f"[whoosh] Indexed {indexed} chunks for {filename}")
+    except Exception as exc:
+        # Whoosh indexing failure is non-fatal; semantic search still works
+        logger.warning(f"[whoosh] Failed to index {filename}: {exc}")
+
     # 5. Update document status in DB
     if document_id:
         meta: dict[str, Any] = {
             "page_count": page_count,
             "table_count": table_count,
             "char_count": len(extracted_text),
+            "parent_child": use_parent_child,
         }
         if preview_pdf_path:
             meta["preview_pdf_path"] = preview_pdf_path
@@ -269,6 +352,7 @@ def _do_full_processing(
         "chunks": len(chunks_with_pages),
         "pages": page_count,
         "tables": table_count,
+        "parent_child": use_parent_child,
     }
 
 
