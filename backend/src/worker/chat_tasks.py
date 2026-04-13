@@ -885,12 +885,23 @@ def rag_document_search(
     """
     logger.info(f"[RAG] Search for session {session_id}: {question[:50]}...")
     try:
-        # ── Hybrid Search: Semantic (Qdrant) + BM25 (Whoosh) + RRF fusion ──
+        # ── Query Enhancement: classify and enhance before search ──
+        from src.services.search.query_enhancer import QueryEnhancer, QueryStrategy
         from src.services.search.hybrid_search import HybridSearchService
 
+        enhancer = QueryEnhancer()
+        enhanced = enhancer.enhance(question)
+        logger.info(
+            f"[RAG] Query strategy: {enhanced.strategy.value}, "
+            f"sub-queries: {len(enhanced.queries)}"
+        )
+        if enhanced.hyde_output:
+            logger.info(f"[RAG] HyDE output: {enhanced.hyde_output[:100]}...")
+
+        # ── Hybrid Search: feed enhanced queries ──
         hybrid = HybridSearchService()
         hybrid_results = hybrid.search(
-            query=question,
+            query=enhanced.queries if len(enhanced.queries) > 1 else enhanced.queries[0],
             user_id=user_id,
             department=department,
             limit=5,
@@ -965,9 +976,14 @@ def rag_document_search(
             if msg_id and hybrid_results:
                 chunk_ids = [r.doc_id for r in hybrid_results if r.doc_id]
                 if chunk_ids:
+                    metadata_patch = {"rag_chunk_ids": chunk_ids}
+                    # Store query enhancement info for debugging/analytics
+                    metadata_patch["query_strategy"] = enhanced.strategy.value
+                    if enhanced.strategy == QueryStrategy.DECOMPOSED:
+                        metadata_patch["sub_queries"] = enhanced.queries
                     http_client.patch(
                         f"{BACKEND_INTERNAL_URL}/messages/{msg_id}/metadata",
-                        json={"rag_chunk_ids": chunk_ids},
+                        json=metadata_patch,
                     )
         except Exception as e:
             logger.warning(f"[RAG] Could not store chunk_ids in message metadata: {e}")
