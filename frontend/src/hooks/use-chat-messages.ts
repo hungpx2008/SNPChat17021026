@@ -50,6 +50,9 @@ export function useChatMessages(t: TranslateFn, department: string) {
             }),
             React.createElement("p", null, message.content),
           ),
+          parentMessageId: message.parent_message_id ?? undefined,
+          branchIndex: message.branch_index ?? 0,
+          isActiveBranch: message.is_active_branch ?? true,
         };
       }
 
@@ -59,6 +62,9 @@ export function useChatMessages(t: TranslateFn, department: string) {
         backendId: message.id,
         metadata: { attachments: meta.attachments || [] },
         content: message.content,
+        parentMessageId: message.parent_message_id ?? undefined,
+        branchIndex: message.branch_index ?? 0,
+        isActiveBranch: message.is_active_branch ?? true,
       };
     },
     [],
