@@ -878,6 +878,7 @@ def rag_document_search(
     session_id: str,
     user_id: str | None = None,
     department: str | None = None,
+    target_message_id: str | None = None,
 ) -> dict[str, Any]:
     """
     RAG Document Search — find and synthesize answers from uploaded documents.
@@ -945,15 +946,22 @@ def rag_document_search(
         # 5. Save via Backend API
         from src.core.http_client import get_http_client
         http_client = get_http_client(timeout=10.0)
-        resp = http_client.post(
-            f"{BACKEND_INTERNAL_URL}/sessions/{session_id}/messages",
-            json={"content": result_text, "role": "assistant"},
-        )
+        if target_message_id:
+            # Update placeholder message created by regenerate
+            resp = http_client.patch(
+                f"{BACKEND_INTERNAL_URL}/messages/{target_message_id}/content",
+                json={"content": result_text},
+            )
+        else:
+            resp = http_client.post(
+                f"{BACKEND_INTERNAL_URL}/sessions/{session_id}/messages",
+                json={"content": result_text, "role": "assistant"},
+            )
         resp.raise_for_status()
 
         # 6. Store retrieved chunk IDs in message metadata for accurate feedback
         try:
-            msg_id = resp.json().get("id")
+            msg_id = target_message_id or resp.json().get("id")
             if msg_id and hybrid_results:
                 chunk_ids = [r.doc_id for r in hybrid_results if r.doc_id]
                 if chunk_ids:
@@ -973,13 +981,17 @@ def rag_document_search(
         logger.exception(f"Error in RAG document search: {exc}")
         try:
             from src.core.http_client import get_http_client
-            get_http_client(timeout=10.0).post(
-                f"{BACKEND_INTERNAL_URL}/sessions/{session_id}/messages",
-                json={
-                    "content": "Xin lỗi, hệ thống gặp sự cố khi tìm kiếm tài liệu. Vui lòng thử lại sau ạ.",
-                    "role": "assistant",
-                },
-            )
+            error_content = "Xin lỗi, hệ thống gặp sự cố khi tìm kiếm tài liệu. Vui lòng thử lại sau ạ."
+            if target_message_id:
+                get_http_client(timeout=10.0).patch(
+                    f"{BACKEND_INTERNAL_URL}/messages/{target_message_id}/content",
+                    json={"content": error_content},
+                )
+            else:
+                get_http_client(timeout=10.0).post(
+                    f"{BACKEND_INTERNAL_URL}/sessions/{session_id}/messages",
+                    json={"content": error_content, "role": "assistant"},
+                )
         except Exception:
             pass
         from .helpers import publish_task_complete

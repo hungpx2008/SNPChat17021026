@@ -91,6 +91,7 @@ def run_sql_query(
     question: str,
     session_id: str,
     user_id: str | None = None,
+    target_message_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Vanna SQL Agent + LangGraph verification loop.
@@ -206,14 +207,24 @@ def run_sql_query(
 
         # 6. Save result via API (with attachments in metadata)
         try:
-            api_url = f"{BACKEND_INTERNAL_URL}/sessions/{session_id}/messages"
-            payload = {
-                "content": result_text,
-                "role": "assistant",
-                "metadata": {"attachments": attachments} if attachments else {},
-            }
             from src.core.http_client import get_http_client
-            resp = get_http_client(timeout=10.0).post(api_url, json=payload)
+            if target_message_id:
+                # Update placeholder message created by regenerate
+                patch_payload = {"content": result_text}
+                if attachments:
+                    patch_payload["metadata"] = {"attachments": attachments}
+                resp = get_http_client(timeout=10.0).patch(
+                    f"{BACKEND_INTERNAL_URL}/messages/{target_message_id}/content",
+                    json=patch_payload,
+                )
+            else:
+                api_url = f"{BACKEND_INTERNAL_URL}/sessions/{session_id}/messages"
+                payload = {
+                    "content": result_text,
+                    "role": "assistant",
+                    "metadata": {"attachments": attachments} if attachments else {},
+                }
+                resp = get_http_client(timeout=10.0).post(api_url, json=payload)
             resp.raise_for_status()
             logger.info(f"Saved message via API: {resp.status_code}")
 
@@ -236,13 +247,17 @@ def run_sql_query(
         # Save Vietnamese error message — NEVER expose SQL/Python tracebacks to user
         try:
             from src.core.http_client import get_http_client
-            get_http_client(timeout=10.0).post(
-                f"{BACKEND_INTERNAL_URL}/sessions/{session_id}/messages",
-                json={
-                    "content": "Xin lỗi Đại ca, hệ thống gặp sự cố khi truy vấn dữ liệu. Vui lòng thử lại sau ạ.",
-                    "role": "assistant",
-                },
-            )
+            error_content = "Xin lỗi Đại ca, hệ thống gặp sự cố khi truy vấn dữ liệu. Vui lòng thử lại sau ạ."
+            if target_message_id:
+                get_http_client(timeout=10.0).patch(
+                    f"{BACKEND_INTERNAL_URL}/messages/{target_message_id}/content",
+                    json={"content": error_content},
+                )
+            else:
+                get_http_client(timeout=10.0).post(
+                    f"{BACKEND_INTERNAL_URL}/sessions/{session_id}/messages",
+                    json={"content": error_content, "role": "assistant"},
+                )
         except Exception:
             pass
         # Still notify frontend so it stops waiting
