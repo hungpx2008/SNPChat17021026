@@ -12,8 +12,11 @@ import { Typewriter } from "@/components/typewriter";
 import { LLMResponseRenderer, containsTableMarkup } from "./llm-response-renderer";
 import { FeedbackButtons } from "./feedback-buttons";
 import { TTSButton } from "./tts-button";
+import { BranchNavigator } from "./branch-navigator";
+import { MessageActions } from "./message-actions";
 import type { Message } from "./types";
 import type { Attachment } from "@/services/chat-backend";
+import type { BranchInfo } from "@/services/chat-backend";
 
 /**
  * Sanitize bot responses:
@@ -63,6 +66,14 @@ interface ChatMessageListProps {
   messages: Message[];
   messagesEndRef: RefObject<HTMLDivElement>;
   onPreviewAttachment?: (att: Attachment) => void;
+  branchInfoMap?: Record<string, BranchInfo>;
+  onNavigateBranch?: (messageId: string, direction: "prev" | "next") => void;
+  onEditMessage?: (messageId: string, newContent: string) => void;
+  onRegenerateMessage?: (messageId: string) => void;
+  editingMessageId?: string | null;
+  onStartEdit?: (messageId: string) => void;
+  onCancelEdit?: () => void;
+  branchLoading?: boolean;
 }
 
 function AttachmentRenderer({ attachments, onPreview }: { attachments: Attachment[]; onPreview?: (att: Attachment) => void }) {
@@ -145,7 +156,19 @@ const BotMessageContent = memo(function BotMessageContent({
   return <LLMResponseRenderer content={clean} />;
 });
 
-export function ChatMessageList({ messages, messagesEndRef, onPreviewAttachment }: ChatMessageListProps) {
+export function ChatMessageList({
+  messages,
+  messagesEndRef,
+  onPreviewAttachment,
+  branchInfoMap = {},
+  onNavigateBranch,
+  onEditMessage,
+  onRegenerateMessage,
+  editingMessageId,
+  onStartEdit,
+  onCancelEdit,
+  branchLoading,
+}: ChatMessageListProps) {
   return (
     <main className="flex-1 overflow-hidden">
       <ScrollArea className="h-full">
@@ -155,6 +178,8 @@ export function ChatMessageList({ messages, messagesEndRef, onPreviewAttachment 
             const metadata = (message as any).metadata || {};
             const attachments: Attachment[] = metadata.attachments || [];
             const messageId: string | undefined = (message as any).backendId;
+            const branchInfo = messageId ? branchInfoMap[messageId] : undefined;
+            const isEditing = editingMessageId === messageId;
 
             return (
               <div
@@ -198,13 +223,40 @@ export function ChatMessageList({ messages, messagesEndRef, onPreviewAttachment 
                     <AttachmentRenderer attachments={attachments} onPreview={onPreviewAttachment} />
                   </div>
 
-                  {/* Feedback + TTS buttons for bot messages */}
-                  {message.role === "bot" && typeof message.content === "string" && (
-                    <div className="flex items-center gap-1 mt-1">
-                      {messageId && <FeedbackButtons messageId={messageId} />}
-                      <TTSButton text={message.content} />
-                    </div>
-                  )}
+                  {/* Branch navigation + message actions row */}
+                  <div className="flex items-center gap-1 mt-1">
+                    {/* Feedback + TTS buttons for bot messages */}
+                    {message.role === "bot" && typeof message.content === "string" && (
+                      <>
+                        {messageId && <FeedbackButtons messageId={messageId} />}
+                        <TTSButton text={message.content} />
+                      </>
+                    )}
+
+                    {/* Branch navigator */}
+                    {branchInfo && onNavigateBranch && messageId && (
+                      <BranchNavigator
+                        branchInfo={branchInfo}
+                        onNavigate={(dir) => onNavigateBranch(messageId, dir)}
+                        loading={branchLoading}
+                      />
+                    )}
+
+                    {/* Edit / Regenerate actions */}
+                    {messageId && typeof message.content === "string" && (
+                      <MessageActions
+                        role={message.role}
+                        messageId={messageId}
+                        originalContent={message.content}
+                        isEditing={!!isEditing}
+                        onStartEdit={() => onStartEdit?.(messageId)}
+                        onCancelEdit={() => onCancelEdit?.()}
+                        onSubmitEdit={(newContent) => onEditMessage?.(messageId, newContent)}
+                        onRegenerate={() => onRegenerateMessage?.(messageId)}
+                        loading={branchLoading}
+                      />
+                    )}
+                  </div>
                 </div>
                 {message.role === "user" && (
                   <Avatar className="h-8 w-8">
