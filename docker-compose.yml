@@ -12,6 +12,8 @@ x-common-env: &common-env
   MEM0_URL: http://mem0:8000
   BACKEND_INTERNAL_URL: http://backend:8000
   PYTHONUNBUFFERED: "1"
+  # Whoosh BM25 index directory (Hybrid Search)
+  WHOOSH_INDEX_DIR: /data/whoosh_index
   # AI Keys
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
@@ -131,6 +133,7 @@ services:
     volumes:
       - ./backend:/app
       - media-data:/app/media
+      - whoosh-index:/data/whoosh_index
     environment:
       <<: *common-env
     ports:
@@ -178,6 +181,7 @@ services:
     command: celery -A src.worker.celery_app worker -Q chat_priority -c 2 --loglevel=info -n chat@%h
     volumes:
       - ./backend:/app
+      - whoosh-index:/data/whoosh_index
     environment:
       <<: *common-env
     depends_on:
@@ -219,6 +223,7 @@ services:
     volumes:
       - ./backend:/app
       - media-data:/app/media
+      - whoosh-index:/data/whoosh_index
     environment:
       <<: *common-env
     depends_on:
@@ -269,3 +274,4 @@ volumes:
   qdrant-data:
   huggingface-cache:
   media-data:
+  whoosh-index:

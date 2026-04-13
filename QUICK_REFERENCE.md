@@ -1,475 +1,239 @@
 # ChatSNP Quick Reference Guide
 
-## 🎯 Core Architecture at a Glance
+## 🚀 Key Entry Points
 
+### Document Ingestion
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     USER → FRONTEND                              │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-                      ↓
-        ┌─────────────────────────────┐
-        │   FastAPI Backend            │
-        │  /sessions/{id}/messages     │
-        └──────────┬──────────────────┘
-                   │
-        ┌──────────┴──────────────────────────┐
-        │                                      │
-        ↓                                      ↓
-   ┌──────────────┐               ┌──────────────────┐
-   │ Redis Cache  │               │ PostgreSQL DB    │
-   │ (1hr TTL)    │               │ (Chat history)   │
-   └──────────────┘               └──────────────────┘
-        │                               │
-        └───────────────┬───────────────┘
-                        │
-        ┌───────────────┴─────────────────────────────┐
-        │         Celery Task Router                   │
-        └───────┬───────────┬──────────┬──────────────┘
-                │           │          │
-     ┌──────────↓─┐  ┌──────↓──┐  ┌───↓───────┐
-     │ chat_      │  │ data_   │  │  media_   │
-     │ priority   │  │ batch   │  │  process  │
-     └────┬───────┘  └────┬────┘  └────┬──────┘
-          │               │            │
-     ┌────┴──────────────┐│           │
-     │                   ││           │
-  ┌──↓───────────┬──────↓─┴─┐  ┌────↓──────┐
-  │ process_chat │  rag_doc │  │process_   │
-  │ _response    │ _search  │  │document   │
-  │ store_memory │ run_sql  │  │transcribe │
-  │ summarize    │ feedback │  │generate_  │
-  └──┬────┬──────┴──────┬───┘  │chart      │
-     │    │             │      └───┬───────┘
-     ↓    ↓             ↓          │
-   ┌──────────┐  ┌──────────┐  ┌──┴──────────┐
-   │  Qdrant  │  │   Mem0   │  │  Docling   │
-   │  (Short- │  │  (Long-  │  │  Whisper   │
-   │  term)   │  │  term)   │  │  Lida TTS  │
-   └──────────┘  └──────────┘  └───────────┘
+endpoint: UPLOAD → celery task
+  ↓
+process_document() 
+  @ backend/src/worker/media_tasks.py:26
+  ↓
+DoclingProcessor.process()
+  @ backend/src/services/docling_service.py:607
+  ↓
+upsert_vectors("port_knowledge", payloads, vectors)
+  @ backend/src/core/qdrant_setup.py:71
 ```
 
----
-
-## 📋 Message Processing Flow
-
+### RAG Search
 ```
-User sends message
-        │
-        ↓
-POST /sessions/{id}/messages
-        │
-        ├─ ChatService.add_message()
-        │   ├─ Create DB record
-        │   ├─ Update Redis cache (+1h TTL)
-        │   └─ Return message with intent_type
-        │
-        ├─ Dispatch Celery task (mode-based)
-        │   ├─ "chat"  → process_chat_response ──────────┐
-        │   ├─ "rag"   → rag_document_search ────────────┐
-        │   └─ "sql"   → run_sql_query ─────────────────┐│
-        │                                                 ││
-        ├─ Trigger: memory storage (if >10 chars)        ││
-        │   └─ store_memory ────────────────────────────┐││
-        │                                                 │││
-        ├─ Trigger: summarization (every 10 msgs)       ││││
-        │   └─ summarize_session_history ────────────┐  ││││
-        │                                              │  ││││
-        └─ Frontend polling/SSE for updates          │  ││││
-                                                      │  ││││
-Frontend listens to SSE: GET /sessions/{id}/stream   │  ││││
-        │                                              │  ││││
-        ├─ Subscribe to: session:{id} Redis channel  │  ││││
-        │                                              │  ││││
-        └─ Wait for: publish_task_complete() signal  │  ││││
-                     (from any task below)            │  ││││
-                                                      │  ││││
-                                                      ↓  ↓↓↓↓
-                                        [Celery tasks run in parallel]
-                                        [Each publishes signal on complete]
+POST /sessions/{id}/messages (mode=rag)
+  ↓
+ChatService.add_message()
+  @ backend/src/services/chat_service.py:64
+  ↓
+rag_document_search.delay()
+  @ backend/src/worker/chat_tasks.py:623
+  ↓
+VectorStoreIndex.retrieve()
+  (LlamaIndex + Qdrant)
+  ↓
+LLM synthesis + Redis pub/sub event
 ```
 
----
+## 📊 File Locations
 
-## 🧠 Dual Memory Model
+| Component | Path | Key Functions |
+|---|---|---|
+| **Docling** | `backend/src/services/docling_service.py` | `process()`, `_build_docling_chunks()` |
+| **Media Tasks** | `backend/src/worker/media_tasks.py` | `process_document()`, `_do_full_processing()` |
+| **Chat Tasks** | `backend/src/worker/chat_tasks.py` | `rag_document_search()`, `_gather_unified_context()` |
+| **Chat Service** | `backend/src/services/chat_service.py` | `add_message()` |
+| **Qdrant Setup** | `backend/src/core/qdrant_setup.py` | `upsert_vectors()`, `ensure_collections()` |
+| **Chat API** | `backend/src/api/chat.py` | `add_message()`, `stream_session()` |
+| **Composer UI** | `frontend/src/components/chat/chat-composer.tsx` | Mode selection UI |
+| **Config** | `backend/src/core/config.py` | Settings class |
+| **Helpers** | `backend/src/worker/helpers.py` | `_smart_chunk()`, `publish_task_complete()` |
 
-### Triggering Conditions
+## 🔗 Data Structures
 
-```
-┌─────────────────────────────────────┐
-│  When Message Added                 │
-├─────────────────────────────────────┤
-│                                     │
-│  Content length > 10 chars?         │
-│  └─ YES → store_memory.delay()      │
-│     └─ Async POST to Mem0 API       │
-│        └─ Stores with metadata      │
-│           (session_id, department)  │
-│                                     │
-│  Message count % 10 == 0?           │
-│  └─ YES → summarize_session         │
-│           _history.delay()          │
-│     └─ Calls LLM to create          │
-│        500-char summary             │
-│     └─ Saves to session.metadata    │
-│                                     │
-└─────────────────────────────────────┘
+### ChunkData (Docling native)
+```python
+text: str                    # Chunk text
+page_number: int             # Page #
+headings: list[str]          # Heading hierarchy
+metadata: dict               # {row_keys, doc_items, has_cell_provenance}
 ```
 
-### Retrieval
-
-```
-Semantic Search Request
-        │
-        ├─ Embed query via Mem0
-        │
-        ├─ Get short-term (Qdrant)
-        │  ├─ search_vectors(
-        │  │   collection="chat_chunks",
-        │  │   filters={user_id, department}
-        │  │ )
-        │  └─ Returns: [msg_chunks]
-        │
-        ├─ Get long-term (Mem0)
-        │  └─ POST {MEM0_URL}/search
-        │     ├─ query
-        │     ├─ user_id
-        │     └─ limit=5
-        │
-        └─ Merge & score
-           ├─ Convert formats
-           ├─ Filter: score >= 0.35
-           ├─ Sort by score DESC
-           └─ Return top-k
+### Qdrant Payload (port_knowledge)
+```python
+text, source_file, page_number, chunk_index, user_id, document_id,
+type="document_chunk", extractor="docling"/"vlm",
+headings, row_keys, quality, department, is_public, dislike_reason
 ```
 
----
-
-## 🔄 Chat to Qdrant Pipeline
-
-```
-Message: "Giá container 20 feet bao nhiêu?"
-        │
-        ├─ process_chat_response()
-        │  │
-        │  ├─ 1. Smart chunk (512 chars, 50 overlap)
-        │  │   └─ [chunk1, chunk2, ...]
-        │  │
-        │  ├─ 2. Embed chunks (Parallel, max 8)
-        │  │   └─ ThreadPoolExecutor
-        │  │      └─ For each chunk:
-        │  │         POST {MEM0_URL}/embed
-        │  │         └─ {"vector": [1024 dims]}
-        │  │
-        │  └─ 3. Upsert to Qdrant
-        │     └─ collection="chat_chunks"
-        │        point_struct = {
-        │          id: UUID,
-        │          vector: [1024 floats],
-        │          payload: {
-        │            "content": chunk_text,
-        │            "session_id": uuid,
-        │            "message_id": uuid,
-        │            "user_id": str,
-        │            "role": "user",
-        │            "department": str,
-        │            "chunk_index": int
-        │          }
-        │        }
-        │
-        └─ Complete ✓ (stored in short-term memory)
+### LlamaIndex Node
+```python
+node.text                    # Content
+node.metadata                # Payload dict
+node.score                   # Cosine similarity
+node.node_id                 # UUID for feedback
 ```
 
----
-
-## 🔍 RAG Pipeline (Document Search)
-
-```
-User: "Quy định về container hàng khô là gì?"
-        │
-        ├─ rag_document_search()
-        │
-        ├─ 1. Setup LLM Embed (cached singleton)
-        │   └─ HuggingFaceEmbedding(
-        │       "thanhtantran/Vietnamese_Embedding_v2"
-        │     )
-        │
-        ├─ 2. Retrieve from Qdrant
-        │   │  collection="port_knowledge"
-        │   │  similarity_top_k=5
-        │   │  filter = _build_qdrant_filter(user_id, dept)
-        │   │
-        │   └─ Access control logic:
-        │      IF (user_id = USER OR (is_public AND dept = USER_DEPT))
-        │         AND quality != "low"
-        │      THEN include chunk
-        │
-        ├─ 3. Filter by score threshold
-        │   └─ top_nodes = [n for n in all_nodes
-        │                    if n.score >= 0.35]
-        │
-        ├─ 4. Build unified context
-        │   │
-        │   ├─ Long-term: GET {MEM0_URL}/search
-        │   │  └─ Collect relevant user memories
-        │   │
-        │   ├─ Session summary: DB query
-        │   │  └─ Read session.metadata.summary
-        │   │
-        │   ├─ Recent messages: DB query (last 6)
-        │   │  └─ ORDER BY created_at DESC
-        │   │
-        │   └─ Combine in order:
-        │      "### Long-term Memory\n..."
-        │      "### Tóm tắt hội thoại\n..."
-        │      "### Hội thoại gần đây\n..."
-        │      "### Đoạn trích tài liệu\n[1]...[2]..."
-        │
-        ├─ 5. Extract citations
-        │   │
-        │   ├─ For each chunk:
-        │   │   ├─ Extract metadata (file, page, headings)
-        │   │   └─ Extract text content
-        │   │
-        │   ├─ Dedup by:
-        │   │   ├─ cite_key = (file, page, headings)
-        │   │   └─ content_hash (first 200 chars)
-        │   │
-        │   └─ Result: [{index, file, page, score}, ...]
-        │
-        ├─ 6. LLM synthesis
-        │   │
-        │   ├─ System prompt:
-        │   │  └─ "Bạn là chuyên viên tư vấn ChatSNP..."
-        │   │     [formatting rules, citation rules]
-        │   │
-        │   ├─ User prompt:
-        │   │  └─ "Câu hỏi: {question}\nContext:\n..."
-        │   │
-        │   ├─ Call OpenRouter:
-        │   │  └─ model="openai/gpt-4o-mini"
-        │   │     temperature=0.3, max_tokens=1500
-        │   │
-        │   └─ Get response_text
-        │
-        ├─ 7. Sanitize answer
-        │   ├─ Remove model citation footer
-        │   ├─ Fix malformed citations
-        │   ├─ Remove dangling words
-        │   └─ result_text
-        │
-        ├─ 8. Append citations footer
-        │   └─ result_text += "---\n📚 **Nguồn...**\n..."
-        │
-        ├─ 9. Store chunk IDs in message metadata
-        │   └─ For feedback tracking
-        │
-        ├─ 10. Save response to DB
-        │   └─ POST /sessions/{id}/messages
-        │      └─ {"content": result_text, "role": "assistant"}
-        │
-        └─ 11. Publish SSE event
-            └─ publish_task_complete(session_id)
-               └─ Redis publish
-                  └─ Frontend receives "message_ready"
-```
-
----
-
-## 📊 System Prompts Summary
-
-| Prompt | Context | Used In | Key Features |
-|--------|---------|---------|--------------|
-| **RAG System** | Port authority consultant | rag_document_search | Tables → Markdown, citations, currency preservation, honest uncertainty |
-| **Summary** | Conversation expert | summarize_session_history | 500 chars max, temp=0.1 (consistent) |
-| **Gardener** | Memory manager | consolidate_memories | Importance scoring (1-10), dedup detection, JSON output |
-| **SQL Agent** | Database expert | run_sql_query | Safety rules (SELECT only), schema inspection tools |
-| **Table Enrichment** | Data processor | _llm_enrich_table | List→sentences, Summary→trends, temp=0.0 (accurate) |
-| **Image Analysis** | Vision expert | _extract_text_from_image | Extract all text, diagrams, don't miss info |
-
----
-
-## 🎛️ Configuration & Environment
-
-### Key Environment Variables
+## ⚙️ Critical Configuration
 
 ```bash
-# Mem0 Integration
-MEM0_URL=http://mem0:8000
+# Embedding
 EMBEDDING_MODEL=thanhtantran/Vietnamese_Embedding_v2
 EMBEDDING_DIMENSION=1024
 
-# Qdrant Vector Store
+# Qdrant
 QDRANT_URL=http://qdrant:6333
-QDRANT_GRPC_URL=qdrant:6334  # optional
 
-# LLM Provider
-OPENAI_API_KEY=...
-OPENAI_BASE_URL=https://openrouter.ai/api/v1
-LLM_MODEL=openai/gpt-4o-mini  # fallback from gpt-5-nano
-
-# Database
-DATABASE_URL=postgresql+asyncpg://...
+# Redis (cache + pub/sub)
 REDIS_URL=redis://redis:6379/0
 
-# RAG Threshold
-RAG_SCORE_THRESHOLD=0.35
+# Mem0 (long-term memory)
+MEM0_URL=http://mem0:8000
 
-# Chat Settings
-CHAT_MAX_SESSIONS=100
-CHAT_CACHE_WINDOW=20
-CHAT_CHUNK_SIZE=512
+# LLM
+OPENAI_BASE_URL=https://openrouter.ai/api/v1
+LLM_MODEL=openai/gpt-4o-mini
+OPENAI_API_KEY=...
+
+# Docling VLM
+DOCLING_VLM_ENABLED=true
+DOCLING_VLM_MIN_SIZE=300        # Skip images < 300px
+DOCLING_VLM_MAX_IMAGES=10       # Max images per doc
+DOCLING_CHUNK_MAX_TOKENS=512    # Embedding budget
+
+# RAG
+RAG_SCORE_THRESHOLD=0.35        # Min similarity filter
 ```
 
----
+## 📈 Queue & Task Names
 
-## 🔧 Key Helper Functions
+| Queue | Task Name | Purpose |
+|---|---|---|
+| `media_process` | `src.worker.tasks.process_document` | Upload → Docling → Embed |
+| `chat_priority` | `src.worker.tasks.rag_document_search` | RAG search |
+| `chat_priority` | `src.worker.tasks.process_chat_response` | Chat message → Qdrant |
+| `chat_priority` | `src.worker.tasks.store_memory` | Mem0 memory storage |
+| `chat_priority` | `src.worker.tasks.process_feedback` | Negative feedback → quality=low |
+| `chat_priority` | `src.worker.tasks.summarize_session_history` | Session summary (every 10 msgs) |
 
-### Smart Chunking (`_smart_chunk`)
+## 🔍 Collections in Qdrant
 
-```python
-# Separators (priority order):
-["\n\n\n", "\n\n", "\n", ". ", ", ", " ", ""]
+| Name | Size | Distance | Indexed Fields |
+|---|---|---|---|
+| `chat_chunks` | 1024 | COSINE | user_id, session_id, department |
+| `port_knowledge` | 1024 | COSINE | user_id, department, quality, document_id, source_file |
+| `vanna_schemas_openai` | 1024 | COSINE | (none) |
 
-# Process:
-1. Enrich tables with LLM (semantic text)
-2. Recursive split on separators
-3. Map back to original positions
-4. Estimate page numbers
-5. Return [(chunk_text, page_num), ...]
-```
-
-### Text Cleaning (`_clean_snippet_text`)
-
-```python
-# Steps:
-1. Strip HTML tags
-2. Normalize line endings (\r\n → \n)
-3. Collapse tabs → spaces
-4. Collapse multiple spaces
-5. Collapse blank lines (3+ → 2)
-6. Remove whitespace-only lines
-```
-
-### Citation Deduplication (`_build_context_and_citations`)
-
-```python
-# Dedup strategy:
-cite_key = (filename, page, headings)
-content_hash = hash(snippet[:200])
-
-# If same cite_key or content_hash → skip
-# Otherwise → add to citations list
-# Map all snippets to citation index
-```
-
----
-
-## 💬 Message Flow Triggers
+## 💾 Redis Keys
 
 ```
-┌─ Message added (all users)
-├─ Create DB record ✓
-├─ Update Redis cache ✓
-│
-├─ [ALWAYS] Dispatch task by mode:
-│  ├─ mode="chat"  → process_chat_response
-│  ├─ mode="rag"   → rag_document_search
-│  └─ mode="sql"   → run_sql_query
-│
-├─ [IF user_id AND len(content) > 10] Store memory
-│  └─ store_memory.delay()
-│
-└─ [IF message_count % 10 == 0] Summarize
-   └─ summarize_session_history.delay()
+chat:session:{session_id}           # Session message cache (1 hour)
+session:{session_id}                # Pub/Sub channel for SSE events
 ```
 
----
-
-## 🔐 Security Checklist
-
-- [ ] RAG: Access control filter (user_id OR public+dept)
-- [ ] RAG: Quality gate (exclude quality=low chunks)
-- [ ] SQL: Forbid DROP, DELETE, ALTER, TRUNCATE, INSERT, UPDATE
-- [ ] Error: Never expose SQL/tracebacks to user
-- [ ] Error: Always return Vietnamese messages
-- [ ] Memory: Timeout on Mem0 API calls (300s)
-- [ ] Feedback: Track chunk IDs for accurate self-correction
-
----
-
-## 🚀 Performance Wins
-
-| Optimization | Technique | Benefit |
-|--------------|-----------|---------|
-| **Embedding** | Parallel ThreadPoolExecutor (8 workers) | 8x faster |
-| **Model Loading** | Singleton per Celery worker | No reload per request |
-| **Cache** | Redis append-only updates | No full DB reload |
-| **Queries** | Single JOIN instead of 2 | 50% fewer DB hits |
-| **Indexes** | Qdrant payload indexes | Fast filtered search |
-| **Chunking** | Semantic separators (section→word) | Better context |
-| **Table Enrichment** | LLM before chunking | More searchable |
-
----
-
-## 🔄 Feedback Loop (Self-Correction)
+## 🔄 Mode Dispatch Flow
 
 ```
-User dislikes answer
-        │
-        ├─ process_feedback(message_id, is_liked=False)
-        │
-        ├─ Strategy A: Use stored chunk IDs (accurate)
-        │  └─ message.metadata.rag_chunk_ids = [id1, id2, ...]
-        │     └─ Set payload: quality="low"
-        │
-        └─ Strategy B: Fallback similarity search
-           └─ Embed message content
-              └─ Find similar chunks (score > 0.7)
-                 └─ Mark as quality="low"
-
-Next RAG search:
-        └─ Filter excludes quality="low" chunks
-           └─ User gets better answer next time
+User selects mode (chat/sql/rag) in UI
+    ↓
+MessageCreate.mode = selected_mode
+    ↓
+ChatService.add_message() reads mode
+    ↓
+if mode == "rag":
+    rag_document_search.delay(...)
+elif mode == "sql":
+    run_sql_query.delay(...)
+else:  # default "chat"
+    process_chat_response.delay(...)
 ```
 
----
+## 🎯 Critical Functions & Line Numbers
 
-## 📈 Nightly Gardener (2:00 AM)
+| Function | File | Lines | Purpose |
+|---|---|---|---|
+| `process_document` | media_tasks.py | 26 | Celery entry point |
+| `_do_full_processing` | media_tasks.py | 152 | Embed + upsert |
+| `DoclingProcessor.process` | docling_service.py | 607 | Full Docling pipeline |
+| `_build_docling_chunks` | docling_service.py | 336 | HybridChunker + AdaptiveTableSerializer |
+| `_should_call_vlm` | docling_service.py | 243 | VLM smart filter |
+| `rag_document_search` | chat_tasks.py | 623 | RAG Celery task |
+| `_gather_unified_context` | chat_tasks.py | 344 | Mem0 + DB context |
+| `_synthesize_with_llm` | chat_tasks.py | 428 | LLM synthesis |
+| `_build_context_and_citations` | chat_tasks.py | 283 | Citation building |
+| `_build_qdrant_filter` | chat_tasks.py | 171 | Access control |
+| `add_message` | chat_service.py | 64 | Mode dispatch |
+| `ChatComposer` | chat-composer.tsx | 38 | Mode selector UI |
+| `_smart_chunk` | helpers.py | 157 | Table-aware chunking |
+| `publish_task_complete` | helpers.py | 118 | Redis event publish |
+| `upsert_vectors` | qdrant_setup.py | 71 | Qdrant insert |
+| `ensure_collections` | qdrant_setup.py | 47 | Collection setup |
 
+## 🛠️ Debugging Checklist
+
+1. **Document not appearing in RAG?**
+   - Check document status in PostgreSQL: `SELECT status FROM documents WHERE id='...'`
+   - Verify chunks in Qdrant: `qdrant> scroll port_knowledge` (check user_id match)
+   - Check embedding dim: `EMBEDDING_DIMENSION` must equal 1024
+
+2. **RAG returning no results?**
+   - Check `RAG_SCORE_THRESHOLD` (default 0.35) — may be too high
+   - Verify access control filter: user_id or department match
+   - Check quality="low" markings: `SELECT count(*) FROM port_knowledge WHERE quality='low'`
+
+3. **Chunk quality issues?**
+   - Adjust `DOCLING_CHUNK_MAX_TOKENS` (default 512)
+   - Check row_keys extraction in Docling chunks
+   - Review table serialization (markdown vs triplet format)
+
+4. **Image processing slow?**
+   - Reduce `DOCLING_VLM_MAX_IMAGES` (default 10)
+   - Increase `DOCLING_VLM_MIN_SIZE` (default 300px)
+   - Check OpenAI API quotas/throttling
+
+5. **Real-time delivery slow?**
+   - Check Redis Pub/Sub (is it publishing?)
+   - SSE heartbeat timeout: 20s (configurable in chat.py:208)
+   - Verify Celery workers are processing tasks
+
+## 📝 Example Payloads
+
+### Create Message Request
+```json
+{
+  "role": "user",
+  "content": "Giá container 40 foot?",
+  "metadata": {},
+  "mode": "rag"
+}
 ```
-consolidate_memories():
 
-FOR each user_id:
-  1. GET {MEM0_URL}/memories?user_id={uid}
-  2. Send to LLM with analysis prompt
-  3. Parse JSON response:
-     - scores: [{id, score (1-10)}]
-     - merges: [{keep_id, remove_id, merged_text}]
-  4. PUT importance_score to kept memories
-  5. DELETE duplicate memories
-  6. Log stats
-
-Result:
-  - Facts deduplicated
-  - Importance scored
-  - Ready for efficient retrieval
+### Upsert Vectors
+```json
+{
+  "collection": "port_knowledge",
+  "payloads": [{
+    "text": "Container 40 foot: ...",
+    "source_file": "pricing.pdf",
+    "page_number": 5,
+    "chunk_index": 12,
+    "user_id": "user-123",
+    "document_id": "doc-uuid",
+    "type": "document_chunk",
+    "extractor": "docling",
+    "headings": ["Biểu phí"],
+    "row_keys": ["container_40ft"]
+  }],
+  "vectors": [[0.123, 0.456, ...]],
+  "ids": ["chunk-uuid"]
+}
 ```
 
----
-
-## 📍 Quick Navigation
-
-| Want to understand... | Read this file | Function/Class |
-|----------------------|----------------|---|
-| Memory system | `src/core/mem0_config.py` | `embed_text()` |
-| Chat processing | `src/worker/chat_tasks.py` | `process_chat_response()` |
-| RAG pipeline | `src/worker/chat_tasks.py` | `rag_document_search()` |
-| Context assembly | `src/worker/chat_tasks.py` | `_gather_unified_context()` |
-| Chunking | `src/worker/helpers.py` | `_smart_chunk()` |
-| Citations | `src/worker/chat_tasks.py` | `_build_context_and_citations()` |
-| Feedback loop | `src/worker/chat_tasks.py` | `process_feedback()` |
-| Memory consolidation | `src/worker/gardener_tasks.py` | `consolidate_memories()` |
-| SQL queries | `src/worker/data_tasks.py` | `run_sql_query()` |
-| Caching | `src/services/chat_service.py` | `add_message()`, `get_session...()` |
+### Citation JSON
+```json
+{
+  "index": 1,
+  "file": "pricing.pdf",
+  "page": 5,
+  "headings": ["Biểu phí", "Container"],
+  "score": 0.892
+}
+```
 

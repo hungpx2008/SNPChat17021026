@@ -81,6 +81,7 @@ services:
     restart: unless-stopped
     volumes:
       - media-data:/app/media # Shared với workers
+      - whoosh-index:/data/whoosh_index
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-chatsnp}:${POSTGRES_PASSWORD:-12345678}@postgres:5432/${POSTGRES_DB:-chatsnp}
       REDIS_URL: redis://redis:6379/0
@@ -134,6 +135,8 @@ services:
     container_name: chatsnp-worker-chat
     restart: unless-stopped
     command: celery -A src.worker.celery_app worker -Q chat_priority -c 2 --loglevel=info -n chat@%h
+    volumes:
+      - whoosh-index:/data/whoosh_index
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-chatsnp}:${POSTGRES_PASSWORD:-12345678}@postgres:5432/${POSTGRES_DB:-chatsnp}
       REDIS_URL: redis://redis:6379/0
@@ -190,6 +193,7 @@ services:
     command: celery -A src.worker.celery_app worker -Q media_process -c 1 --loglevel=info -n media@%h
     volumes:
       - media-data:/app/media # Shared với backend
+      - whoosh-index:/data/whoosh_index
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-chatsnp}:${POSTGRES_PASSWORD:-12345678}@postgres:5432/${POSTGRES_DB:-chatsnp}
       REDIS_URL: redis://redis:6379/0
@@ -237,3 +241,4 @@ volumes:
   qdrant-data:
   huggingface-cache:
   media-data: # Shared giữa backend + worker_media (charts, audio, docs)
+  whoosh-index: # BM25 lexical search index (Hybrid Search)

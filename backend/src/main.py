@@ -85,6 +85,7 @@ def create_app() -> FastAPI:
 
     # Routers
     app.include_router(chat_router.router)
+    app.include_router(chat_router.messages_router)
     app.include_router(admin_router.router)
     app.include_router(upload_router.router)
     app.include_router(feedback_router.router)
