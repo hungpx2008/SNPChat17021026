@@ -341,71 +341,136 @@ def _build_context_and_citations(top_nodes: list) -> tuple[list[dict[str, Any]],
     return citations, context_blocks
 
 
-def _gather_unified_context(question: str, session_id: str, user_id: str | None) -> dict[str, str]:
-    """Collect long-term memory, session summary, and recent chat for unified prompting."""
-    long_term_block = ""
-    summary_block = ""
-    recent_block = ""
-
-    # Long-term memories via Mem0 (best effort)
-    if user_id:
-        try:
-            from src.core.http_client import get_http_client
-            mem0_url = os.getenv("MEM0_URL", MEM0_DEFAULT_URL)
-            client = get_http_client(timeout=10.0)
-            resp = client.post(
-                f"{mem0_url.rstrip('/')}/search",
-                json={"query": question, "user_id": user_id, "limit": 5},
-            )
-            if resp.status_code == 200:
-                results = resp.json().get("results") or []
-                if results:
-                    long_term_block = "\n".join(
-                        f"- {item.get('text') or item.get('memory') or ''}" for item in results
-                    ).strip()
-        except Exception as e:
-            logger.warning(f"[RAG] Mem0 long-term fetch failed: {e}")
-
-    # Session summary + recent messages via DB — single JOIN query (was 2 separate queries)
+def _fetch_mem0_memories(question: str, user_id: str) -> list[str]:
+    """Fetch long-term memories from Mem0 service (best effort)."""
     try:
-        from src.core.database_pool import db_pool
-
-        rows = db_pool.execute_query_fetchall(
-            """
-            SELECT
-                s.metadata AS session_meta,
-                m.role,
-                m.content
-            FROM chat_sessions s
-            LEFT JOIN (
-                SELECT session_id, role, content, created_at
-                FROM chat_messages
-                WHERE session_id = :sid
-                ORDER BY created_at DESC
-                LIMIT 6
-            ) m ON m.session_id = s.id
-            WHERE s.id = :sid
-            """,
-            {"sid": session_id}
+        from src.core.http_client import get_http_client
+        mem0_url = os.getenv("MEM0_URL", MEM0_DEFAULT_URL)
+        client = get_http_client(timeout=10.0)
+        resp = client.post(
+            f"{mem0_url.rstrip('/')}/search",
+            json={"query": question, "user_id": user_id, "limit": 5},
         )
-        if rows:
-            # First row always contains session metadata
-            meta = rows[0][0]
-            if isinstance(meta, dict) and meta.get("summary"):
-                summary_block = str(meta["summary"])
-            # Collect message rows (role/content not null)
-            msg_rows = [(r[1], r[2]) for r in rows if r[1] is not None]
-            if msg_rows:
-                msg_rows = list(reversed(msg_rows))
-                recent_block = "\n".join(f"{r[0].upper()}: {r[1]}" for r in msg_rows)
+        if resp.status_code != 200:
+            return []
+        results = resp.json().get("results") or []
+        return [
+            item.get("text") or item.get("memory") or ""
+            for item in results
+            if item.get("text") or item.get("memory")
+        ]
     except Exception as e:
-        logger.warning(f"[RAG] Recent history fetch failed: {e}")
+        logger.warning(f"[RAG] Mem0 long-term fetch failed: {e}")
+        return []
 
+
+def _fetch_session_history(session_id: str) -> tuple[str, list[dict]]:
+    """Fetch session summary and all messages from DB.
+
+    Returns (summary_text, all_messages) where messages are in chronological order.
+    """
+    from src.core.database_pool import db_pool
+
+    # Fetch session summary
+    summary_text = ""
+    meta_rows = db_pool.execute_query_fetchall(
+        "SELECT metadata FROM chat_sessions WHERE id = :sid",
+        {"sid": session_id},
+    )
+    if meta_rows and meta_rows[0][0]:
+        meta = meta_rows[0][0]
+        if isinstance(meta, dict) and meta.get("summary"):
+            summary_text = str(meta["summary"])
+
+    # Fetch ALL messages (ContextBuilder handles budget fitting)
+    msg_rows = db_pool.execute_query_fetchall(
+        "SELECT role, content FROM chat_messages "
+        "WHERE session_id = :sid ORDER BY created_at ASC",
+        {"sid": session_id},
+    )
+    all_messages = [
+        {"role": r[0], "content": r[1]}
+        for r in msg_rows
+        if r[0] is not None
+    ]
+    return summary_text, all_messages
+
+
+def _build_context_with_builder(
+    memories: list[str], summary_text: str, all_messages: list[dict],
+    department: str | None = None,
+) -> dict[str, str]:
+    """Use ContextBuilder + SystemPromptBuilder for dynamic budget allocation."""
+    from src.services.context_builder import ContextBuilder, SystemPromptBuilder
+
+    llm_model = os.getenv("LLM_MODEL", "openai/gpt-4o-mini")
+    prompt_builder = SystemPromptBuilder()
+    system_prompt = prompt_builder.build(
+        mode="rag",
+        memories=memories,
+        session_summary=summary_text,
+        department=department,
+    )
+    builder = ContextBuilder(model=llm_model)
+    ctx = builder.build_context(
+        system_prompt=system_prompt,
+        memories=memories,
+        summary=summary_text,
+        messages=all_messages,
+        rag_context="",  # RAG context is added separately in _synthesize_with_llm
+    )
+    return {
+        "long_term_block": ctx.long_term_block,
+        "summary_block": ctx.summary_block,
+        "recent_block": ctx.recent_block,
+        "system_prompt": system_prompt,
+    }
+
+
+def _build_context_fallback(
+    memories: list[str], summary_text: str, all_messages: list[dict],
+) -> dict[str, str]:
+    """Fallback: return raw data without budget optimization (legacy LIMIT 6 behavior)."""
+    long_term_block = "\n".join(f"- {m}" for m in memories) if memories else ""
+    recent_block = ""
+    if all_messages:
+        recent = all_messages[-6:]
+        recent_block = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in recent)
     return {
         "long_term_block": long_term_block,
-        "summary_block": summary_block,
+        "summary_block": summary_text,
         "recent_block": recent_block,
     }
+
+
+def _gather_unified_context(
+    question: str,
+    session_id: str,
+    user_id: str | None,
+    department: str | None = None,
+) -> dict[str, str]:
+    """Collect long-term memory, session summary, and recent chat for unified prompting.
+
+    Uses ContextBuilder + SystemPromptBuilder for dynamic budget-based context
+    assembly. Falls back to legacy behavior on import errors.
+
+    Returns dict with keys: long_term_block, summary_block, recent_block, system_prompt.
+    """
+    memories = _fetch_mem0_memories(question, user_id) if user_id else []
+
+    try:
+        summary_text, all_messages = _fetch_session_history(session_id)
+    except Exception as e:
+        logger.warning(f"[RAG] Recent history fetch failed: {e}")
+        summary_text, all_messages = "", []
+
+    try:
+        return _build_context_with_builder(memories, summary_text, all_messages, department)
+    except Exception as e:
+        logger.warning(f"[RAG] ContextBuilder failed, using fallback: {e}")
+        result = _build_context_fallback(memories, summary_text, all_messages)
+        result["system_prompt"] = _RAG_SYSTEM_PROMPT  # fallback uses static prompt
+        return result
 
 
 _RAG_SYSTEM_PROMPT = (
@@ -432,12 +497,23 @@ def _synthesize_with_llm(
     long_term_block: str = "",
     summary_block: str = "",
     recent_block: str = "",
+    system_prompt: str = "",
 ) -> str:
-    """Call LLM via OpenRouter to synthesize a clean answer."""
+    """Call LLM via OpenRouter to synthesize a clean answer.
+
+    Parameters
+    ----------
+    system_prompt : str
+        Dynamic system prompt from SystemPromptBuilder. Falls back to
+        static _RAG_SYSTEM_PROMPT if empty.
+    """
     openai_key = os.getenv("OPENAI_API_KEY", "")
     openai_base = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
     # gpt-5-nano là reasoning model — trả content="" → dùng gpt-4o-mini làm default
     llm_model = os.getenv("LLM_MODEL", "openai/gpt-4o-mini")
+
+    # Use dynamic prompt if provided, otherwise fall back to static
+    effective_prompt = system_prompt or _RAG_SYSTEM_PROMPT
 
     unified_context_parts = []
     if long_term_block:
@@ -465,7 +541,7 @@ def _synthesize_with_llm(
             json={
                 "model": llm_model,
                 "messages": [
-                    {"role": "system", "content": _RAG_SYSTEM_PROMPT},
+                    {"role": "system", "content": effective_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 "temperature": 0.3,
@@ -617,6 +693,181 @@ def _format_citations_footer(citations: list[dict[str, Any]]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Hybrid Search helpers
+# ---------------------------------------------------------------------------
+
+
+def _fallback_semantic_search(
+    question: str,
+    user_id: str | None,
+    department: str | None,
+) -> list:
+    """Pure semantic fallback when hybrid search returns no results.
+
+    Returns a list of SearchResult-like objects for compatibility.
+    """
+    from llama_index.core import Settings, StorageContext, VectorStoreIndex
+    from llama_index.vector_stores.qdrant import QdrantVectorStore
+    from qdrant_client import QdrantClient
+
+    from src.services.search.hybrid_search import SearchResult
+
+    Settings.embed_model = _get_hf_embed_model()
+    Settings.llm = None
+
+    qdrant = QdrantClient(url=os.getenv("QDRANT_URL", "http://qdrant:6333"))
+    vector_store = QdrantVectorStore(client=qdrant, collection_name="port_knowledge")
+    storage_ctx = StorageContext.from_defaults(vector_store=vector_store)
+    index = VectorStoreIndex.from_vector_store(
+        vector_store=vector_store, storage_context=storage_ctx
+    )
+
+    retriever = index.as_retriever(
+        similarity_top_k=5,
+        vector_store_kwargs={"filter": _build_qdrant_filter(user_id, department)},
+    )
+    nodes = list(retriever.retrieve(question))
+
+    results = []
+    for node in nodes:
+        score = getattr(node, "score", 0.0) or 0.0
+        if score < RAG_SCORE_THRESHOLD:
+            continue
+        meta = getattr(node.node, "metadata", {}) or {}
+        text = node.node.get_content() if hasattr(node.node, "get_content") else ""
+        results.append(SearchResult(
+            doc_id=node.node.node_id or "",
+            title=meta.get("source_file", ""),
+            content=text,
+            tags=",".join(meta.get("headings", [])),
+            score=score,
+            semantic_score=score,
+            source="semantic",
+            metadata=meta,
+        ))
+    return results
+
+
+def _extract_hybrid_meta(result) -> dict[str, Any]:
+    """Extract normalized metadata from a hybrid SearchResult."""
+    meta = result.metadata or {}
+    fname = result.title or meta.get("source_file", "Không rõ")
+
+    raw_page = meta.get("page_number") or meta.get("page", "?")
+    try:
+        page_display = str(int(raw_page))
+    except (ValueError, TypeError):
+        page_display = "?"
+
+    headings = meta.get("headings", [])
+    if isinstance(result.tags, str) and result.tags and not headings:
+        headings = [t.strip() for t in result.tags.split(",") if t.strip()]
+
+    return {
+        "fname": fname,
+        "page_display": page_display,
+        "headings": headings,
+        "doc_id": meta.get("document_id", ""),
+    }
+
+
+def _maybe_add_image_hint(snippet: str, fname: str, doc_id: str) -> str:
+    """Append image download hint if the source is an image file."""
+    ext = fname.lower().rsplit(".", 1)[-1] if "." in fname else ""
+    if ext in ("jpg", "jpeg", "png") and doc_id:
+        snippet += f"\n[LƯU Ý QUAN TRỌNG: Link Tải ảnh gốc là `/api/upload/{doc_id}/download`]"
+    return snippet
+
+
+def _resolve_parent_content(hybrid_results: list) -> list:
+    """Replace child chunk content with parent content when parent_id is present.
+
+    For backward compatibility, results without parent_id keep their original content.
+    Multiple children pointing to the same parent are deduped — only the first is kept.
+    """
+    from src.services.parent_chunk_store import fetch_parent_content
+
+    # Collect unique parent_ids
+    parent_ids = list({
+        r.parent_id for r in hybrid_results
+        if hasattr(r, "parent_id") and r.parent_id
+    })
+
+    if not parent_ids:
+        return hybrid_results  # No parent-child chunks, use as-is
+
+    # Fetch parent content from PostgreSQL
+    parent_map = fetch_parent_content(parent_ids)
+
+    # Replace child content with parent content, dedup by parent_id
+    seen_parents: set[str] = set()
+    resolved: list = []
+
+    for result in hybrid_results:
+        pid = getattr(result, "parent_id", "") or ""
+        if pid and pid in parent_map and parent_map[pid]:
+            if pid in seen_parents:
+                continue  # Skip duplicate parent
+            seen_parents.add(pid)
+            # Replace content with parent's full text
+            result.content = parent_map[pid]
+        resolved.append(result)
+
+    return resolved
+
+
+def _build_hybrid_context_and_citations(
+    hybrid_results: list,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Build context blocks and citations from hybrid search results.
+
+    Mirrors ``_build_context_and_citations`` but works with ``SearchResult`` objects
+    instead of LlamaIndex NodeWithScore objects.
+    """
+    citations: list[dict[str, Any]] = []
+    context_blocks: list[str] = []
+    seen_citations: set[str] = set()
+    seen_content: set[int] = set()
+
+    for result in hybrid_results:
+        snippet = (result.content or "").strip()
+        if not snippet:
+            continue
+
+        content_hash = hash(snippet[:200])
+        if content_hash in seen_content:
+            continue
+        seen_content.add(content_hash)
+
+        m = _extract_hybrid_meta(result)
+        snippet = _maybe_add_image_hint(snippet, m["fname"], m["doc_id"])
+
+        heading_key = "|".join(str(h) for h in m["headings"][:2]) if m["headings"] else ""
+        cite_key = f"{m['fname']}|{m['page_display']}|{heading_key}"
+
+        if cite_key not in seen_citations:
+            seen_citations.add(cite_key)
+            citations.append({
+                "index": len(citations) + 1,
+                "file": m["fname"],
+                "page": m["page_display"],
+                "headings": m["headings"],
+                "score": result.score,
+                "doc_id": m["doc_id"],
+                "source": result.source,
+            })
+
+        cite_idx = next(
+            (c["index"] for c in citations
+             if c.get("file") == m["fname"] and c.get("page") == m["page_display"]),
+            len(citations),
+        )
+        context_blocks.append(f"[{cite_idx}] {snippet}")
+
+    return citations, context_blocks
+
+
+# ---------------------------------------------------------------------------
 # RAG Celery task
 # ---------------------------------------------------------------------------
 
@@ -633,51 +884,44 @@ def rag_document_search(
     """
     logger.info(f"[RAG] Search for session {session_id}: {question[:50]}...")
     try:
-        from llama_index.core import VectorStoreIndex, StorageContext, Settings
-        from llama_index.vector_stores.qdrant import QdrantVectorStore
-        from qdrant_client import QdrantClient
+        # ── Hybrid Search: Semantic (Qdrant) + BM25 (Whoosh) + RRF fusion ──
+        from src.services.search.hybrid_search import HybridSearchService
 
-        # 1. Setup embedding (cached singleton) + vector store
-        Settings.embed_model = _get_hf_embed_model()
-        Settings.llm = None
-        qdrant = QdrantClient(url=os.getenv("QDRANT_URL", "http://qdrant:6333"))
-        vector_store = QdrantVectorStore(client=qdrant, collection_name="port_knowledge")
-        storage_ctx = StorageContext.from_defaults(vector_store=vector_store)
-        index = VectorStoreIndex.from_vector_store(vector_store=vector_store, storage_context=storage_ctx)
-
-        # 2. Retrieve top-k chunks, then filter by score threshold
-        # Giữ top_k = 5 để context gọn và tập trung hơn.
-        retriever = index.as_retriever(
-            similarity_top_k=5,
-            vector_store_kwargs={"filter": _build_qdrant_filter(user_id, department)},
+        hybrid = HybridSearchService()
+        hybrid_results = hybrid.search(
+            query=question,
+            user_id=user_id,
+            department=department,
+            limit=5,
+            score_threshold=RAG_SCORE_THRESHOLD,
         )
-        all_nodes = list(retriever.retrieve(question))
 
-        # Discard chunks below score threshold — avoids hallucination from irrelevant context
-        top_nodes = [
-            n for n in all_nodes
-            if getattr(n, "score", 0.0) is not None and (getattr(n, "score", 0.0) or 0.0) >= RAG_SCORE_THRESHOLD
-        ]
-        if not top_nodes:
-            logger.info(f"[RAG] No chunks above score threshold {RAG_SCORE_THRESHOLD} for session {session_id}")
+        # ── Fallback: if hybrid returns nothing, try pure semantic ──
+        if not hybrid_results:
+            logger.info(f"[RAG] Hybrid returned 0 results, falling back to pure semantic")
+            hybrid_results = _fallback_semantic_search(question, user_id, department)
 
-        # 3. Build context + citations
-        citations, context_blocks = _build_context_and_citations(top_nodes)
+        # ── Before building context, resolve parent chunks ──
+        hybrid_results = _resolve_parent_content(hybrid_results)
+
+        # ── Build context + citations from hybrid results ──
+        citations, context_blocks = _build_hybrid_context_and_citations(hybrid_results)
         context_text = "\n\n---\n\n".join(context_blocks).strip()
-        logger.info(f"[RAG CONTEXT (Top K)]:\n{context_text}\n{'='*50}")
+        logger.info(f"[RAG CONTEXT (Hybrid)]:\n{context_text}\n{'='*50}")
 
         # 4. Synthesize via LLM (with fallback)
         result_text = ""
         llm_error: str | None = None
         if context_text:
             try:
-                unified_ctx = _gather_unified_context(question, session_id, user_id)
+                unified_ctx = _gather_unified_context(question, session_id, user_id, department)
                 result_text = _synthesize_with_llm(
                     question,
                     context_text,
                     long_term_block=unified_ctx.get("long_term_block", ""),
                     summary_block=unified_ctx.get("summary_block", ""),
                     recent_block=unified_ctx.get("recent_block", ""),
+                    system_prompt=unified_ctx.get("system_prompt", ""),
                 )
             except Exception as e:
                 llm_error = str(e)
@@ -710,15 +954,8 @@ def rag_document_search(
         # 6. Store retrieved chunk IDs in message metadata for accurate feedback
         try:
             msg_id = resp.json().get("id")
-            if msg_id and top_nodes:
-                chunk_ids = []
-                for n in top_nodes:
-                    try:
-                        node_id = n.node.node_id
-                        if node_id:
-                            chunk_ids.append(node_id)
-                    except Exception:
-                        pass
+            if msg_id and hybrid_results:
+                chunk_ids = [r.doc_id for r in hybrid_results if r.doc_id]
                 if chunk_ids:
                     http_client.patch(
                         f"{BACKEND_INTERNAL_URL}/messages/{msg_id}/metadata",
@@ -847,16 +1084,22 @@ def process_feedback(
 def summarize_session_history(
     self,
     session_id: str,
+    keep_count: int = 12,
+    trim_tokens: int = 6_000,
 ) -> dict[str, Any]:
     """
-    Tóm tắt bất đồng bộ lịch sử hội thoại.
-    Triggered every 10 messages — runs in background, user doesn't wait.
-    
-    1. Fetch ALL messages from DB
-    2. Call LLM to produce a 500-char summary
-    3. Store summary in session.metadata.summary
+    Tóm tắt bất đồng bộ lịch sử hội thoại (Smart Summarization).
+
+    Upgraded from "every 10 messages" to token-aware with keep window.
+    - keep_count: number of most recent messages to leave unsummarized (S2B: 12)
+    - trim_tokens: max tokens of conversation history to summarize
+    - Uses improved S2B-ported summarization prompt
+    - Keeps original messages in DB (summary is supplementary, not destructive)
     """
-    logger.info(f"[summary] Summarizing session {session_id}")
+    logger.info(
+        f"[summary] Summarizing session {session_id} "
+        f"(keep_count={keep_count}, trim_tokens={trim_tokens})"
+    )
     try:
         from src.core.database_pool import db_pool
 
@@ -872,17 +1115,36 @@ def summarize_session_history(
 
         msg_count = len(rows)
 
-        # Truncate each message for the summary prompt (max 200 chars each)
-        conversation = "\n".join(
-            f"{r[0].upper()}: {r[1][:200]}{'...' if len(r[1]) > 200 else ''}"
-            for r in rows
-        )
+        # 2. Separate messages: summarize older ones, keep recent ones
+        if msg_count <= keep_count:
+            return {"status": "skip", "reason": "not enough messages to summarize"}
 
-        # 2. Call LLM to summarize
+        messages_to_summarize = rows[:-keep_count]
+
+        # 3. Build conversation text within trim_tokens budget
+        from src.utils.token_estimator import estimate_tokens
+        conversation_parts: list[str] = []
+        tokens_used = 0
+        for r in messages_to_summarize:
+            content = r[1] or ""
+            truncated = content[:200] + ("..." if len(content) > 200 else "")
+            line = f"{r[0].upper()}: {truncated}"
+            line_tokens = estimate_tokens(line)
+            if tokens_used + line_tokens > trim_tokens:
+                break
+            conversation_parts.append(line)
+            tokens_used += line_tokens
+
+        conversation = "\n".join(conversation_parts)
+        if not conversation.strip():
+            return {"status": "skip", "reason": "conversation too short to summarize"}
+
+        # 4. Call LLM with improved S2B-ported prompt
         openai_key = os.getenv("OPENAI_API_KEY", "")
         openai_base = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
         llm_model = os.getenv("LLM_MODEL", "openai/gpt-5-nano")
 
+        from src.utils.summarization import SUMMARY_PROMPT_VI
         from src.core.http_client import get_http_client
         client = get_http_client(timeout=60.0)
         resp = client.post(
@@ -894,19 +1156,11 @@ def summarize_session_history(
             json={
                 "model": llm_model,
                 "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Bạn là chuyên gia tóm tắt hội thoại. "
-                            "Tóm tắt cuộc hội thoại sau thành MỘT đoạn văn ngắn (tối đa 500 ký tự). "
-                            "Tập trung vào: chủ đề chính, thông tin quan trọng, và kết luận. "
-                            "Viết bằng tiếng Việt, súc tích."
-                        ),
-                    },
-                    {"role": "user", "content": conversation[:6000]},  # Cap input
+                    {"role": "system", "content": SUMMARY_PROMPT_VI},
+                    {"role": "user", "content": conversation},
                 ],
                 "temperature": 0.1,
-                "max_tokens": 300,
+                "max_tokens": 500,
             },
         )
         resp.raise_for_status()
@@ -914,9 +1168,13 @@ def summarize_session_history(
 
         logger.info(f"[summary] Generated summary ({len(summary)} chars) for session {session_id}")
 
-        # 3. Store summary in session metadata — safe JSON serialization
+        # 5. Store summary in session metadata — safe JSON serialization
         import json as _json
-        patch_payload = _json.dumps({"summary": summary, "message_count_at_summary": msg_count})
+        patch_payload = _json.dumps({
+            "summary": summary,
+            "message_count_at_summary": msg_count,
+            "summarized_up_to": msg_count - keep_count,
+        })
         db_pool.execute_query(
             "UPDATE chat_sessions SET metadata = "
             "COALESCE(metadata, '{}'::json)::jsonb || CAST(:patch AS jsonb) "
