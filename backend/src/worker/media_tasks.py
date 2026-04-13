@@ -61,14 +61,42 @@ def process_document(
         table_count = 0
         deep_meta: dict[str, Any] | None = None
 
-        # --- Branch A: Images → VLM ---
+        # --- Branch A: Images → VLM + optional OCR ---
         if ext in (".jpg", ".jpeg", ".png"):
             logger.info(f"[process] Image file detected → calling VLM")
             from src.worker.helpers import _extract_text_from_image
-            extracted_text = _extract_text_from_image(file_path)
+            vlm_text = _extract_text_from_image(file_path)
             page_count = 1
             table_count = 0
             deep_meta = {"extractor": "vlm", "vlm_model": os.getenv("LLM_MODEL", "gpt-4o-mini")}
+
+            # Phase 9: Try OCR on image for text-heavy content (receipts, forms, etc.)
+            ocr_text = ""
+            from src.services.ocr_service import OCRService
+            if OCRService.is_ocr_enabled():
+                try:
+                    ocr_service = OCRService()
+                    ocr_result = ocr_service.extract_from_image(file_path)
+                    if ocr_result.text.strip():
+                        ocr_text = ocr_result.text.strip()
+                        deep_meta["ocr_text_length"] = len(ocr_text)
+                        deep_meta["ocr_confidence"] = ocr_result.confidence
+                        logger.info(
+                            f"[ocr] Image OCR extracted {len(ocr_text)} chars "
+                            f"(confidence={ocr_result.confidence:.2f})"
+                        )
+                except Exception as ocr_exc:
+                    logger.warning(f"[ocr] Image OCR failed: {ocr_exc}. Using VLM only.")
+
+            # Combine: OCR text (primary if available) + VLM description (supplementary)
+            if ocr_text:
+                extracted_text = (
+                    f"[OCR text từ ảnh]\n{ocr_text}\n\n"
+                    f"[Mô tả hình ảnh (VLM)]\n{vlm_text}"
+                )
+                deep_meta["extractor"] = "vlm+paddleocr"
+            else:
+                extracted_text = vlm_text
 
         # --- Branch B: All other documents → Docling ---
         else:
@@ -120,8 +148,61 @@ def process_document(
                 f"{len(prechunked_chunks)} chunks"
             )
 
+            # ── Phase 9: PaddleOCR fallback for scanned PDFs ──────────
+            # If Docling extracted very little text, the PDF is likely
+            # scanned/photographed. Fall back to OCR if enabled.
+            if ext == ".pdf":
+                from src.services.ocr_service import OCRService
+                if (
+                    OCRService.is_ocr_enabled()
+                    and OCRService.is_scanned_pdf(extracted_text, page_count)
+                ):
+                    logger.info(
+                        f"[process] Scanned PDF detected ({len(extracted_text)} chars / "
+                        f"{page_count} pages = "
+                        f"{len(extracted_text) // max(page_count, 1)} chars/page). "
+                        f"Falling back to PaddleOCR..."
+                    )
+                    try:
+                        ocr_service = OCRService()
+                        ocr_result = ocr_service.extract_from_pdf(file_path)
+
+                        if ocr_result.text.strip():
+                            # OCR succeeded — replace Docling output
+                            extracted_text = ocr_result.text
+                            prechunked_chunks = OCRService.to_prechunked_chunks(ocr_result)
+                            deep_meta = {
+                                **(deep_meta or {}),
+                                "extractor": "paddleocr",
+                                "ocr_confidence": ocr_result.confidence,
+                                "ocr_pages": len(ocr_result.pages),
+                                "docling_fallback_reason": "scanned_pdf",
+                            }
+                            logger.info(
+                                f"[ocr] PaddleOCR extracted {len(extracted_text)} chars, "
+                                f"{len(prechunked_chunks)} chunks from scanned PDF"
+                            )
+                        else:
+                            logger.warning(
+                                f"[ocr] PaddleOCR returned empty text for {filename}. "
+                                "Keeping Docling output."
+                            )
+                    except Exception as ocr_exc:
+                        logger.warning(
+                            f"[ocr] PaddleOCR failed for {filename}: {ocr_exc}. "
+                            "Continuing with Docling output."
+                        )
+
         if not extracted_text.strip():
             raise ValueError(f"No text extracted from {filename}")
+
+        # Determine extractor used
+        if ext in (".jpg", ".jpeg", ".png"):
+            _extractor = deep_meta.get("extractor", "vlm") if deep_meta else "vlm"
+        elif deep_meta and deep_meta.get("extractor") == "paddleocr":
+            _extractor = "paddleocr"
+        else:
+            _extractor = "docling"
 
         return _do_full_processing(
             file_path=file_path,
@@ -131,7 +212,7 @@ def process_document(
             extracted_text=extracted_text,
             page_count=page_count,
             table_count=table_count,
-            extractor_used="docling" if ext not in (".jpg", ".jpeg", ".png") else "vlm",
+            extractor_used=_extractor,
             preview_pdf_path=preview_pdf_path,
             prechunked_chunks=prechunked_chunks,
             meta_extra=deep_meta,
