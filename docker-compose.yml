@@ -33,6 +33,8 @@ x-common-env: &common-env
   DOCLING_PREFIX_HEADING_ROWKEY: ${DOCLING_PREFIX_HEADING_ROWKEY:-true}
   DOCLING_GROUP_LOCK_ENABLED: ${DOCLING_GROUP_LOCK_ENABLED:-true}
   DOCLING_GROUP_LOCK_MAX_CHARS: ${DOCLING_GROUP_LOCK_MAX_CHARS:-2800}
+  # PaddleOCR for scanned documents (Phase 9)
+  ENABLE_PADDLE_OCR: ${ENABLE_PADDLE_OCR:-false}
 
 services:
   # ==========================================================================
@@ -224,6 +226,7 @@ services:
       - ./backend:/app
       - media-data:/app/media
       - whoosh-index:/data/whoosh_index
+      - paddle-models:/root/.paddleocr
     environment:
       <<: *common-env
     depends_on:
@@ -275,3 +278,4 @@ volumes:
   huggingface-cache:
   media-data:
   whoosh-index:
+  paddle-models:

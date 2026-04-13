@@ -16,6 +16,8 @@ RUN apt-get update && apt-get install -y \
     libsm6 \
     libgl1 \
     libglib2.0-0 \
+    # PDF-to-image conversion for PaddleOCR (Phase 9)
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy application code

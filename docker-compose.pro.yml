@@ -194,6 +194,7 @@ services:
     volumes:
       - media-data:/app/media # Shared với backend
       - whoosh-index:/data/whoosh_index
+      - paddle-models:/root/.paddleocr
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-chatsnp}:${POSTGRES_PASSWORD:-12345678}@postgres:5432/${POSTGRES_DB:-chatsnp}
       REDIS_URL: redis://redis:6379/0
@@ -204,6 +205,8 @@ services:
       MEM0_URL: http://mem0:8000
       BACKEND_INTERNAL_URL: http://backend:8000
       PYTHONUNBUFFERED: "1"
+      # PaddleOCR for scanned documents (Phase 9)
+      ENABLE_PADDLE_OCR: "true"
       # AI Keys for RAG
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
@@ -242,3 +245,4 @@ volumes:
   huggingface-cache:
   media-data: # Shared giữa backend + worker_media (charts, audio, docs)
   whoosh-index: # BM25 lexical search index (Hybrid Search)
+  paddle-models: # PaddleOCR model cache (Phase 9)
