@@ -1,10 +1,124 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(ls:*)",
+      "Bash(docker-compose down:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(docker-compose restart:*)",
+      "Bash(find:*)",
+      "Bash(python3:*)",
+      "Bash(/tmp/audit_report.md:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(/tmp/issue_analysis.md:*)",
+      "Bash(\"/Volumes/SSD orico/ChatSNP/chatSNP170226/backend/.venv/bin/python\" -c \"import qdrant_client; print\\(''qdrant_client OK''\\)\")",
+      "Bash(\"/Volumes/SSD orico/ChatSNP/chatSNP170226/backend/.venv/bin/python\" -c \"import llama_index.core; print\\(''llama_index.core OK''\\)\")",
+      "Bash(\"/Volumes/SSD orico/ChatSNP/chatSNP170226/backend/.venv/bin/python\" -c \"import qdrant_client.http; print\\(''qdrant_client.http OK''\\)\")",
+      "Bash(\"/Volumes/SSD orico/ChatSNP/chatSNP170226/backend/.venv/bin/python\" -c \"import qdrant_client.models; print\\(''qdrant_client.models OK''\\)\")",
+      "Bash(\"/Volumes/SSD orico/ChatSNP/chatSNP170226/backend/.venv/bin/pip\" install \"llama-index>=0.11.0\" \"llama-index-vector-stores-qdrant\" \"llama-index-embeddings-huggingface\")",
+      "Bash(\"/Volumes/SSD orico/ChatSNP/chatSNP170226/backend/.venv/bin/python\":*)",
+      "Bash(/tmp/chatsnp-findings.md:*)"
     ],
     "additionalDirectories": [
       "/tmp"
     ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/gsd-check-update.js"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/gsd-session-state.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/gsd-context-monitor.js",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/gsd-phase-boundary.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/gsd-prompt-guard.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/gsd-read-guard.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/gsd-workflow-guard.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/gsd-validate-commit.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/auto-update-project-context.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "node .claude/hooks/gsd-statusline.js"
   }
 }
