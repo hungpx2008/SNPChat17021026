@@ -47,11 +47,10 @@ task_routes = {
     "src.worker.tasks.run_sql_query": {"queue": "data_batch"},
     "src.worker.tasks.sync_data":     {"queue": "data_batch"},
 
-    # 🔵 Media — heavy processing (Lida, Docling, TTS)
-    "src.worker.tasks.analyze_document":              {"queue": "media_process"},
-    "src.worker.tasks.process_document_with_engine":  {"queue": "media_process"},
-    "src.worker.tasks.generate_chart":                {"queue": "media_process"},
+    # 🔵 Media — heavy processing (Docling, Whisper, Lida, TTS)
     "src.worker.tasks.process_document":              {"queue": "media_process"},
+    "src.worker.tasks.transcribe_audio":              {"queue": "media_process"},
+    "src.worker.tasks.generate_chart":                {"queue": "media_process"},
     "src.worker.tasks.text_to_speech":                {"queue": "media_process"},
 
     # 🟢 Gardener — nightly maintenance
@@ -65,6 +64,10 @@ worker_prefetch_multiplier = 1          # Lấy 1 task/lần → công bằng gi
 task_acks_late = True                   # Ack sau khi xử lý → tránh mất task khi crash
 worker_max_tasks_per_child = 100        # Restart worker sau 100 task → chống memory leak
 result_expires = 3600                   # Kết quả hết hạn sau 1h
+
+# Tăng giới hạn Timeout để tránh treo cứng khi xử lý Docling & local VLM nặng (Max: 2 giờ)
+task_time_limit = 7500                  # (Hard limit) kill task sau 7500s
+task_soft_time_limit = 7200             # (Soft limit) bắn exception (SoftTimeLimitExceeded) sau 7200s
 
 # ---------------------------------------------------------------------------
 # Beat Schedule — periodic tasks

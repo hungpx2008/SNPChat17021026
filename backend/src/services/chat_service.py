@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
 from src.core.db import SessionLocal, init_engine
-from src.core.mem0_config import embed_text, get_client
 from src.core.qdrant_setup import search_vectors, upsert_vectors
 from src.core.redis_client import get_redis
 from src.repositories.messages import MessageRepository
@@ -18,7 +17,6 @@ from src.repositories.sessions import SessionRepository
 from src.schemas.schemas import MessageCreate, SearchQuery
 
 
-import httpx
 from src.worker.tasks import process_chat_response, store_memory
 
 logger = logging.getLogger(__name__)
@@ -56,7 +54,11 @@ class ChatService:
             if cached:
                 return json.loads(cached)
 
-        messages = await self.message_repo.list_messages(session_id, limit=limit)
+        if limit is None:
+            # Use active-branch walk for full conversation view
+            messages = await self.message_repo.list_active_branch_messages(session_id)
+        else:
+            messages = await self.message_repo.list_messages(session_id, limit=limit)
         payload = [self.serialize_message(message) for message in messages]
         if limit is None:
             await self.redis.set(cache_key, json.dumps(payload), ex=3600)
@@ -70,11 +72,16 @@ class ChatService:
         user_id: str | None,
         department: str | None,
     ):
+        # Determine parent for branching support
+        last_active = await self.message_repo.get_last_active_message(session_id)
+        parent_message_id = last_active.id if last_active else None
+
         db_message = await self.message_repo.create_message(
             session_id=session_id,
             role=message.role,
             content=message.content,
             metadata=message.metadata or {},
+            parent_message_id=parent_message_id,
         )
         await self.session.flush()
 
@@ -91,8 +98,19 @@ class ChatService:
             cache_payload = [self.serialize_message(msg) for msg in all_messages]
             await self.redis.set(cache_key, json.dumps(cache_payload), ex=3600)
 
-        # ── Dispatch task based on explicit mode (user must choose) ──
-        mode = getattr(message, 'mode', 'chat')
+        # ── Resolve mode: auto-route or explicit ──
+        mode = getattr(message, 'mode', 'auto')
+
+        if mode == "auto":
+            from src.services.intent_router import IntentRouter
+            router = IntentRouter()
+            intent_result = router.classify(message.content)
+            mode = intent_result.intent.value
+            logger.info(
+                f"[AutoRoute] '{message.content[:50]}...' → {mode} "
+                f"(confidence={intent_result.confidence:.2f}, "
+                f"signals={intent_result.signals})"
+            )
 
         if mode == "sql":
             from src.worker.tasks import run_sql_query
@@ -129,11 +147,8 @@ class ChatService:
                 department=department,
             )
 
-        # Trigger async summary every 10 messages (runs in background)
-        msg_count = len(all_messages)
-        if msg_count > 0 and msg_count % 10 == 0:
-            from src.worker.tasks import summarize_session_history
-            summarize_session_history.delay(session_id=str(session_id))
+        # Trigger smart summarization based on token usage (replaces hardcoded % 10)
+        self._maybe_trigger_summarization(session_id, all_messages)
 
         # Return message + mode so API can signal frontend
         db_message._intent_type = mode
@@ -143,8 +158,50 @@ class ChatService:
     # migrated to Celery worker tasks (process_chat_response in tasks.py).
     # They are no longer needed here.
 
+    @staticmethod
+    def _to_msg_dicts(all_messages: Iterable) -> list[dict]:
+        """Normalize mixed message types (dict or ORM objects) to dicts."""
+        result = []
+        for m in all_messages:
+            if isinstance(m, dict):
+                result.append({
+                    "role": m.get("role", "user"),
+                    "content": m.get("content", ""),
+                })
+            else:
+                result.append({
+                    "role": getattr(m, "role", "user"),
+                    "content": getattr(m, "content", ""),
+                })
+        return result
+
+    def _maybe_trigger_summarization(self, session_id: UUID, all_messages: Iterable) -> None:
+        """Check token usage and trigger smart summarization if threshold exceeded."""
+        try:
+            from src.utils.token_estimator import estimate_conversation_tokens
+            from src.utils.summarization import get_summarization_params
+
+            msg_dicts = self._to_msg_dicts(all_messages)
+            estimated_tokens = estimate_conversation_tokens(msg_dicts)
+            llm_model = getattr(self.settings, "llm_model", "openai/gpt-4o-mini")
+            params = get_summarization_params(llm_model, estimated_tokens)
+            if params:
+                from src.worker.tasks import summarize_session_history
+                summarize_session_history.delay(
+                    session_id=str(session_id),
+                    keep_count=params["keep_count"],
+                    trim_tokens=params["trim_tokens"],
+                )
+        except Exception as e:
+            logger.warning(f"Smart summarization check failed, using fallback: {e}")
+            msg_count = sum(1 for _ in all_messages)
+            if msg_count > 0 and msg_count % 10 == 0:
+                from src.worker.tasks import summarize_session_history
+                summarize_session_history.delay(session_id=str(session_id))
+
     async def semantic_search(self, query: SearchQuery):
-        query_vector = await embed_text(query.query)
+        from src.worker.chat_tasks import embed_query
+        query_vector = embed_query(query.query)
         filters: dict[str, Any] = {}
         if query.user_id:
             filters["user_id"] = query.user_id
@@ -164,18 +221,15 @@ class ChatService:
             if not query.user_id:
                 return []
             try:
-                client = get_client()
-                resp = await client.post(
-                    f"{self.settings.mem0_url.rstrip('/')}/search",
-                    json={
-                        "query": query.query,
-                        "user_id": query.user_id,
-                        "limit": query.limit
-                    }
+                from src.core.mem0_local import search_memories
+                data = search_memories(
+                    query=query.query,
+                    user_id=query.user_id,
+                    limit=query.limit,
                 )
-                if resp.status_code == 200:
-                    data = resp.json()
+                if isinstance(data, dict):
                     return data.get("results", [])
+                return data if isinstance(data, list) else []
             except Exception as e:
                 logger.warning(f"Mem0 search failed: {e}")
             return []
@@ -207,7 +261,7 @@ class ChatService:
 
         combined = convert_qdrant(chunk_results) + convert_mem0(mem0_results)
         # Filter by minimum score threshold (unified across sources)
-        SCORE_THRESHOLD = 0.45
+        SCORE_THRESHOLD = 0.35
         combined = [item for item in combined if item["score"] >= SCORE_THRESHOLD]
         combined.sort(key=lambda item: item["score"], reverse=True)
         return combined[: query.limit]
@@ -225,6 +279,13 @@ class ChatService:
             "content": message.content,
             "metadata": message.meta or {},
             "created_at": message.created_at.isoformat(),
+            "parent_message_id": (
+                str(getattr(message, "parent_message_id", None))
+                if getattr(message, "parent_message_id", None)
+                else None
+            ),
+            "branch_index": getattr(message, "branch_index", 0),
+            "is_active_branch": getattr(message, "is_active_branch", True),
         }
 
 

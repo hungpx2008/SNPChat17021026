@@ -1,0 +1,291 @@
+═══════════════════════════════════════════════════════════════════════════════
+                    PHASE 8: AUTO-ROUTING + SEMANTIC CACHE
+                           SYSTEM ARCHITECTURE
+═══════════════════════════════════════════════════════════════════════════════
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           CURRENT FLOW (Explicit Mode)                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────┐
+│   FRONTEND   │
+│  Chat UI     │
+│ ┌──────────────────────────────────────────────────────┐
+│ │ Mode Selector: [Trợ lý] [Số liệu] [Tài liệu]       │
+│ │ User clicks: "Tài liệu"                              │
+│ └──────────────────────────────────────────────────────┘
+│ State: agentMode = "rag"
+│ (frontend/src/components/chat/chat-composer.tsx:58)
+└──────────────┘
+       │
+       │ POST /sessions/{id}/messages
+       │ { "role": "user", "content": "...", "mode": "rag" }
+       │
+       ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                           BACKEND API LAYER                                  │
+│ (backend/src/api/chat.py:86-106)                                            │
+│ @router.post("/{session_id}/messages")                                      │
+│ async def add_message(payload: MessageCreate) → { intent_type: "rag" }      │
+└──────────────────────────────────────────────────────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                        CHAT SERVICE ROUTER                                   │
+│ (backend/src/services/chat_service.py:68-145)                               │
+│ ChatService.add_message()                                                   │
+│                                                                              │
+│ mode = getattr(message, 'mode', 'chat')  # ← Explicit from user             │
+│                                                                              │
+│ if mode == "sql":                                                           │
+│     run_sql_query.delay(...)                                                │
+│ elif mode == "rag":                                                         │
+│     rag_document_search.delay(...)  ◄── RAG PATH                            │
+│ else:                                                                        │
+│     process_chat_response.delay(...)                                        │
+└──────────────────────────────────────────────────────────────────────────────┘
+       │
+       ▼ Celery Task
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                          MAIN RAG PIPELINE                                   │
+│ (backend/src/worker/chat_tasks.py:874-1015)                                 │
+│ rag_document_search()                                                       │
+│                                                                              │
+│  1. Query Enhancement                                                       │
+│     ↓                                                                        │
+│     QueryEnhancer.enhance(question)                                         │
+│     (backend/src/services/search/query_enhancer.py:129-150)                │
+│     → Strategy: DIRECT | HYDE | DECOMPOSED                                 │
+│     → Returns: list of enhanced queries                                    │
+│                                                                              │
+│  2. Hybrid Search                                                           │
+│     ↓                                                                        │
+│     HybridSearchService.search()                                            │
+│     (backend/src/services/search/hybrid_search.py:81-143)                  │
+│     → Semantic (Qdrant) + Lexical (Whoosh) in parallel                     │
+│     → RRF fusion with boost                                                │
+│     → Returns: list[SearchResult]                                          │
+│                                                                              │
+│  3. Context Building                                                        │
+│     ↓                                                                        │
+│     _build_hybrid_context_and_citations()                                   │
+│     (backend/src/worker/chat_tasks.py:819-867)                             │
+│     → Deduplicates snippets                                                │
+│     → Builds citations                                                      │
+│     → Formats context blocks                                               │
+│                                                                              │
+│  4. LLM Synthesis                                                           │
+│     ↓                                                                        │
+│     _synthesize_with_llm(question, context_text, ...)                      │
+│     (backend/src/worker/chat_tasks.py:493-562)                             │
+│     → Unified context: long-term + summary + recent + search results       │
+│     → Call OpenRouter LLM                                                  │
+│     → Dynamic system prompt from SystemPromptBuilder                       │
+│     → Returns: Synthesized answer                                          │
+│                                                                              │
+│  5. Storage                                                                 │
+│     ↓                                                                        │
+│     POST /sessions/{session_id}/messages or PATCH message                  │
+│     → Backend API stores answer                                            │
+│     → SSE event: task_complete                                             │
+│                                                                              │
+│  6. Frontend Refresh                                                        │
+│     ↓                                                                        │
+│     loadSessionMessages(session_id)                                         │
+│     → Displays answer in chat                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     PHASE 8: AUTO-ROUTING + CACHING                          │
+│                           PROPOSED ADDITIONS                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ 1. INTENT CLASSIFIER                                                        │
+│    (NEW: backend/src/services/search/intent_classifier.py)                  │
+│                                                                              │
+│    IntentClassifier.classify(question: str) → IntentResult                  │
+│    {                                                                         │
+│        intent: "chat" | "sql" | "rag",                                      │
+│        confidence: 0.0-1.0,                                                 │
+│        reason: "matched_keywords" | "heuristic" | ...                       │
+│    }                                                                         │
+│                                                                              │
+│    Rules:                                                                    │
+│    ✓ SQL: "thống kê", "so sánh", "dữ liệu", "biểu đồ", "phân tích"        │
+│    ✓ RAG: "tài liệu", "PDF", "trong file", "từ trang", "trang mấy"        │
+│    ✓ Chat: default                                                          │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                   │
+                                   │ Integrate into
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ 2. AUTO-ROUTING IN ChatService.add_message()                                │
+│    (MODIFY: backend/src/services/chat_service.py:68-145)                    │
+│                                                                              │
+│    if message.mode == "auto":  # NEW: support auto mode                     │
+│        intent_result = IntentClassifier().classify(message.content)         │
+│        detected_mode = intent_result.intent                                 │
+│    else:                                                                     │
+│        detected_mode = message.mode  # Use explicit mode                    │
+│                                                                              │
+│    # Route based on auto or explicit mode                                   │
+│    if detected_mode == "sql":                                               │
+│        run_sql_query.delay(...)                                             │
+│    elif detected_mode == "rag":                                             │
+│        rag_document_search.delay(...)                                       │
+│    else:                                                                     │
+│        process_chat_response.delay(...)                                     │
+│                                                                              │
+│    # Store detected intent in message metadata                              │
+│    metadata = {                                                             │
+│        "detected_intent": detected_mode,                                    │
+│        "intent_confidence": intent_result.confidence,                       │
+│        ...                                                                   │
+│    }                                                                         │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                   │
+                                   ├─── rag_document_search.delay(...) ────┐
+                                   │                                        │
+                                   ▼                                        │
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ 3. SEARCH RESULT CACHE                                                      │
+│    (NEW: backend/src/services/cache/search_result_cache.py)                 │
+│                                                                              │
+│    SearchResultCache.get(query, user_id, dept, strategy) → Optional[List]   │
+│    SearchResultCache.set(query, user_id, dept, strategy, results)           │
+│                                                                              │
+│    Cache Key: search:{hash(query + user_id + dept + strategy)}              │
+│    TTL: 24 hours                                                            │
+│    Storage: Redis                                                           │
+│                                                                              │
+│    Integrate into HybridSearchService.search():                             │
+│    ┌─────────────────────────────────────────────────────────────┐          │
+│    │ cached = search_cache.get(query, user_id, dept, strategy)   │          │
+│    │ if cached:                                                  │          │
+│    │     return cached  ◄── CACHE HIT                            │          │
+│    │                                                             │          │
+│    │ results = hybrid_search(query, user_id, dept, ...)         │          │
+│    │ search_cache.set(query, user_id, dept, strategy, results)  │          │
+│    │ return results  ◄── CACHE MISS                             │          │
+│    └─────────────────────────────────────────────────────────────┘          │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                   │
+                                   ▼
+                      _build_hybrid_context_and_citations()
+                                   │
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ 4. LLM RESPONSE CACHE                                                       │
+│    (NEW: backend/src/services/cache/llm_response_cache.py)                  │
+│                                                                              │
+│    LLMResponseCache.get(context_hash, question, mode) → Optional[String]    │
+│    LLMResponseCache.set(context_hash, question, mode, response, citations)  │
+│                                                                              │
+│    Cache Key: llm_resp:{hash(context_text + question + mode)}               │
+│    TTL: 7 days                                                              │
+│    Storage: Redis                                                           │
+│                                                                              │
+│    Integrate into _synthesize_with_llm():                                   │
+│    ┌─────────────────────────────────────────────────────────────┐          │
+│    │ context_hash = hash(context_text)                           │          │
+│    │ cached = llm_cache.get(context_hash, question, mode)        │          │
+│    │ if cached:                                                  │          │
+│    │     return cached  ◄── CACHE HIT (~100ms)                   │          │
+│    │                                                             │          │
+│    │ response = llm.call(question, context_text, ...)           │          │
+│    │ llm_cache.set(context_hash, question, mode, response, ...) │          │
+│    │ return response  ◄── CACHE MISS (~3-5s)                    │          │
+│    └─────────────────────────────────────────────────────────────┘          │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                   │
+                                   ▼
+                            _format_citations_footer()
+                                   │
+                                   ▼
+                         POST /sessions/{id}/messages
+                                   │
+                                   ▼
+                            SSE: task_complete
+                                   │
+                                   ▼
+                        Frontend displays answer
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         KEY FILES & LINE RANGES                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+CRITICAL MODIFICATION POINTS:
+
+1. QueryEnhancer
+   File: backend/src/services/search/query_enhancer.py
+   Add to enhance(): intent classification logic
+   Return: EnhancedQuery + IntentResult
+
+2. ChatService.add_message()
+   File: backend/src/services/chat_service.py:68-145
+   Modify: Add auto-routing before line 103
+   Call: IntentClassifier.classify()
+
+3. HybridSearchService.search()
+   File: backend/src/services/search/hybrid_search.py:81-143
+   Modify: Add cache check before line 112
+   Call: SearchResultCache.get()
+
+4. _synthesize_with_llm()
+   File: backend/src/worker/chat_tasks.py:493-562
+   Modify: Add cache check before line 537
+   Call: LLMResponseCache.get()
+
+5. MessageSchema
+   File: backend/src/schemas/schemas.py:8-36
+   Add fields: detected_intent, intent_confidence, cache_hit
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        CACHE INVALIDATION STRATEGY                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+1. ON DOCUMENT UPLOAD (when knowledge base changes)
+   ├─ Clear: search:* (all search result caches)
+   └─ Keep: llm_resp:* (still valid, just stale knowledge)
+
+2. ON USER FEEDBACK (when vector marked low quality)
+   └─ Optional: Invalidate related search caches
+
+3. ON MAINTENANCE
+   └─ Run: Redis FLUSHDB or pattern-based cleanup on schedule
+
+4. ON CONFIG CHANGE (cache TTL update)
+   └─ Restart: Celery workers and API servers
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+                              PERFORMANCE GAINS
+
+Before Phase 8:
+  - Query: Query Enhancement (LLM) → Hybrid Search → Context Build → LLM Synthesis
+  - Time: ~5-8 seconds per query
+  - Latency: Every query hits search + LLM, no caching
+
+After Phase 8 (best case: full cache hits):
+  - Repeated query: Auto-route (heuristic) → Cache hit → Return ~100ms
+  - Time: ~100ms per cache hit
+  - Improvement: 50-80x faster for FAQs and common queries
+
+Typical gains:
+  - 80% of queries are FAQ-like (same questions repeated)
+  - Average latency reduction: 60-70%
+  - LLM API cost reduction: ~30-40% (fewer API calls)
+  - Search cost reduction: ~40-50% (fewer Qdrant queries)
+
+═══════════════════════════════════════════════════════════════════════════════

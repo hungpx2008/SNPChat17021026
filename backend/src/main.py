@@ -15,6 +15,7 @@ from src.api import admin as admin_router
 from src.api import upload as upload_router
 from src.api import feedback as feedback_router
 from src.api import tts as tts_router
+from src.api import memories as memories_router
 from src.core.config import get_settings
 from src.core.db import get_engine, create_tables
 from src.core.qdrant_setup import get_qdrant_client
@@ -36,13 +37,6 @@ async def lifespan(app: FastAPI):
     await loop.run_in_executor(None, get_qdrant_client)
     logger.info("ChatSNP Backend started successfully.")
     yield
-    # --- Shutdown ---
-    try:
-        from src.core.mem0_config import _client
-        if _client is not None:
-            await _client.aclose()
-    except Exception:
-        pass
 
 
 def create_app() -> FastAPI:
@@ -85,10 +79,12 @@ def create_app() -> FastAPI:
 
     # Routers
     app.include_router(chat_router.router)
+    app.include_router(chat_router.messages_router)
     app.include_router(admin_router.router)
     app.include_router(upload_router.router)
     app.include_router(feedback_router.router)
     app.include_router(tts_router.router)
+    app.include_router(memories_router.router)
 
     # Serve media files (charts, audio, uploads) as static assets
     media_dir = "/app/media"

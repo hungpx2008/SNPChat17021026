@@ -1,0 +1,141 @@
+/**
+ * Enhanced styles for ChatSNP tables in bot responses
+ * Add this to your global CSS or component styles
+ */
+
+/* Enhanced AutoTable styles for Vietnamese pricing tables */
+.chatsnp-table-container {
+  margin: 1rem 0;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.chatsnp-table-container table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.chatsnp-table-container thead {
+  background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+  border-bottom: 2px solid #cbd5e1;
+}
+
+.chatsnp-table-container thead th {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  font-weight: 600;
+  color: #334155;
+  font-size: 0.875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+}
+
+.chatsnp-table-container tbody tr {
+  border-bottom: 1px solid #e2e8f0;
+  transition: background-color 0.2s ease;
+}
+
+.chatsnp-table-container tbody tr:hover {
+  background-color: #f8fafc;
+}
+
+.chatsnp-table-container tbody tr:nth-child(even) {
+  background-color: #f9fafb;
+}
+
+.chatsnp-table-container tbody td {
+  padding: 0.75rem 1rem;
+  color: #475569;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+/* Special styling for price columns */
+.chatsnp-table-container tbody td:last-child,
+.chatsnp-table-container tbody td[data-type="price"] {
+  font-weight: 600;
+  color: #059669;
+  text-align: right;
+}
+
+/* Highlight "Miễn phụ thu" cells */
+.chatsnp-table-container tbody td:contains("Miễn phụ thu") {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .chatsnp-table-container {
+    font-size: 0.75rem;
+  }
+
+  .chatsnp-table-container thead th,
+  .chatsnp-table-container tbody td {
+    padding: 0.5rem 0.75rem;
+  }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  .chatsnp-table-container thead {
+    background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+    border-bottom-color: #475569;
+  }
+
+  .chatsnp-table-container thead th {
+    color: #e2e8f0;
+  }
+
+  .chatsnp-table-container tbody tr {
+    border-bottom-color: #334155;
+  }
+
+  .chatsnp-table-container tbody tr:hover {
+    background-color: #1e293b;
+  }
+
+  .chatsnp-table-container tbody tr:nth-child(even) {
+    background-color: #0f172a;
+  }
+
+  .chatsnp-table-container tbody td {
+    color: #cbd5e1;
+  }
+
+  .chatsnp-table-container tbody td:last-child,
+  .chatsnp-table-container tbody td[data-type="price"] {
+    color: #10b981;
+  }
+}
+
+/* Animation for new tables */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chatsnp-table-container {
+  animation: fadeInUp 0.3s ease-out;
+}
+
+/* Special formatting for Vietnamese currency */
+.vnd-currency {
+  font-weight: 600;
+  color: #059669;
+}
+
+.vnd-currency::after {
+  content: " VNĐ";
+  font-weight: 500;
+  color: #6b7280;
+  font-size: 0.8em;
+}

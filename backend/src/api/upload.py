@@ -1,13 +1,19 @@
 """
 Upload API — File upload and document management endpoints.
+
+Simplified pipeline: all documents → Docling (single engine).
+No Phase 1/2 split, no user engine choice, no Kreuzberg.
 """
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import mimetypes
 import unicodedata
-from typing import Any, Literal, Optional
+
+logger = logging.getLogger(__name__)
+from typing import Any, Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
@@ -23,11 +29,13 @@ router = APIRouter(prefix="/upload", tags=["upload"])
 
 UPLOAD_DIR = "/app/media/uploads"
 
-# Allowed file extensions
 ALLOWED_EXTENSIONS = {
     ".pdf", ".docx", ".doc", ".xlsx", ".xls",
     ".pptx", ".ppt", ".md", ".txt", ".csv",
+    ".jpg", ".jpeg", ".png",
+    ".mp3", ".wav", ".m4a", ".aac",
 }
+MEDIA_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac"}
 
 
 def _validate_extension(filename: str) -> str:
@@ -41,8 +49,8 @@ def _validate_extension(filename: str) -> str:
     return ext
 
 
-def _delete_qdrant_chunks(document_id: str) -> int:
-    """Delete all Qdrant chunks for a document. Returns count deleted."""
+def _delete_qdrant_chunks(document_id: str) -> None:
+    """Delete all Qdrant chunks for a document by document_id."""
     try:
         from qdrant_client.http import models as qmodels
         from src.core.qdrant_setup import get_qdrant_client
@@ -58,79 +66,110 @@ def _delete_qdrant_chunks(document_id: str) -> int:
                 )
             ),
         )
-        return 1
+        logger.info(f"[qdrant] Deleted chunks with document_id={document_id}")
     except Exception as e:
-        print(f"Warning: Failed to delete Qdrant chunks for {document_id}: {e}")
-        return 0
+        logger.error(f"[qdrant] FAILED to delete chunks for document_id={document_id}: {e}")
+
+
+def _delete_qdrant_chunks_by_filename(filename: str, user_id: str | None = None) -> None:
+    """Delete ALL Qdrant chunks matching a source_file (and optionally user_id)."""
+    try:
+        from qdrant_client.http import models as qmodels
+        from src.core.qdrant_setup import get_qdrant_client
+        client = get_qdrant_client()
+        must_conditions: list = [
+            qmodels.FieldCondition(key="source_file", match=qmodels.MatchValue(value=filename))
+        ]
+        if user_id:
+            must_conditions.append(
+                qmodels.FieldCondition(key="user_id", match=qmodels.MatchValue(value=user_id))
+            )
+        client.delete(
+            collection_name="port_knowledge",
+            points_selector=qmodels.FilterSelector(filter=qmodels.Filter(must=must_conditions)),
+        )
+        logger.info(f"[qdrant] Deleted chunks with source_file={filename}, user_id={user_id}")
+    except Exception as e:
+        logger.error(f"[qdrant] FAILED to delete chunks by filename={filename}: {e}")
+
+
+async def _handle_duplicate(
+    db: AsyncSession,
+    filename: str,
+    user_id: str,
+    overwrite: bool,
+) -> None:
+    """
+    Check for duplicate filename. Raises 409 if duplicate exists and overwrite=False.
+    Cleans up old records and vectors if overwrite=True.
+    """
+    result = await db.execute(
+        select(Document)
+        .where(Document.user_id == user_id, Document.filename == filename)
+        .order_by(Document.created_at.desc())
+    )
+    existing_docs = result.scalars().all()
+
+    if not existing_docs:
+        return
+
+    if not overwrite:
+        first_doc = existing_docs[0]
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": f"Tài liệu '{filename}' đã tồn tại. Bạn có muốn ghi đè không?",
+                "existing_document_id": str(first_doc.id),
+                "existing_filename": first_doc.filename,
+                "existing_status": first_doc.status,
+            },
+        )
+
+    # overwrite=True: clean up old vectors + DB records
+    _delete_qdrant_chunks_by_filename(filename, user_id)
+    for old_doc in existing_docs:
+        if old_doc.file_path and os.path.exists(old_doc.file_path):
+            os.remove(old_doc.file_path)
+        await db.delete(old_doc)
+    await db.flush()
 
 
 @router.post("", response_model=DocumentUploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_file(
     file: UploadFile = File(...),
     user_id: Optional[str] = Form(None),
-    force_deep_scan: bool = Form(False),
     overwrite: bool = Form(False),
     db: AsyncSession = Depends(get_db_session),
 ) -> Any:
     """
     Upload a document for processing.
-    
-    - Checks for duplicate filename per user
-    - If overwrite=false and duplicate exists, returns 409 with existing doc info
-    - If overwrite=true, deletes old chunks and re-processes
+
+    All documents are processed through Docling (single pipeline).
+    Status goes directly to 'processing' → 'ready' (or 'error').
+    No user engine choice required.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
     ext = _validate_extension(file.filename)
+    normalized_filename = unicodedata.normalize("NFC", file.filename)
 
-    # Check for duplicate filename for this user (normalize Unicode for Vietnamese)
-    normalized_filename = unicodedata.normalize('NFC', file.filename)
     if user_id:
-        result = await db.execute(
-            select(Document)
-            .where(Document.user_id == user_id, Document.filename == normalized_filename)
-            .order_by(Document.created_at.desc())
-        )
-        existing_doc = result.scalars().first()
+        await _handle_duplicate(db, normalized_filename, user_id, overwrite)
 
-        if existing_doc and not overwrite:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "message": f"Tài liệu '{file.filename}' đã tồn tại. Bạn có muốn ghi đè không?",
-                    "existing_document_id": str(existing_doc.id),
-                    "existing_filename": existing_doc.filename,
-                    "existing_status": existing_doc.status,
-                },
-            )
-
-        if existing_doc and overwrite:
-            # Delete old Qdrant chunks
-            _delete_qdrant_chunks(str(existing_doc.id))
-            # Delete old file
-            if existing_doc.file_path and os.path.exists(existing_doc.file_path):
-                os.remove(existing_doc.file_path)
-            # Delete old DB record
-            await db.delete(existing_doc)
-            await db.flush()
-
-    # Generate unique filename
+    # Save file to disk
     doc_id = uuid4()
     safe_filename = f"{doc_id}{ext}"
     file_path = os.path.join(UPLOAD_DIR, safe_filename)
-
-    # Ensure upload directory exists
     os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-    # Save file
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
 
-    # Create document record
+    # Create DB record
     document = Document(
         id=doc_id,
         user_id=user_id,
@@ -142,65 +181,30 @@ async def upload_file(
     await db.commit()
     await db.refresh(document)
 
-    # Trigger Phase 1 analysis (decides auto-process vs awaiting_choice)
-    from src.worker.tasks import analyze_document
-    analyze_document.delay(
-        file_path=file_path,
-        user_id=user_id,
-        original_filename=file.filename,
-        document_id=str(doc_id),
-    )
+    # Dispatch Celery task based on file type
+    if ext in MEDIA_AUDIO_EXTENSIONS:
+        from src.worker.tasks import transcribe_audio
+        transcribe_audio.delay(
+            file_path=file_path,
+            user_id=user_id,
+            original_filename=file.filename,
+            document_id=str(doc_id),
+        )
+    else:
+        from src.worker.tasks import process_document
+        process_document.delay(
+            file_path=file_path,
+            user_id=user_id,
+            original_filename=file.filename,
+            document_id=str(doc_id),
+        )
 
     return DocumentUploadResponse(
         document_id=doc_id,
         filename=file.filename,
         status="processing",
-        message="Document uploaded and queued for analysis.",
+        message="Tài liệu đã được tải lên và đang xử lý qua Docling.",
     )
-
-
-@router.post("/{document_id}/process")
-async def process_document_with_choice(
-    document_id: UUID,
-    engine: Literal["kreuzberg", "docling"] = Query(...),
-    db: AsyncSession = Depends(get_db_session),
-) -> Any:
-    """
-    Phase 2: User chose an extraction engine for a complex document.
-    Only valid when document status is 'awaiting_choice'.
-    """
-    result = await db.execute(select(Document).where(Document.id == document_id))
-    document = result.scalar_one_or_none()
-    if not document:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    if document.status != "awaiting_choice":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Document status is '{document.status}', expected 'awaiting_choice'",
-        )
-
-    # Update status to processing
-    document.status = "processing"
-    document.extractor_used = engine
-    await db.commit()
-
-    # Dispatch Phase 2 task
-    from src.worker.tasks import process_document_with_engine
-    process_document_with_engine.delay(
-        file_path=document.file_path,
-        engine=engine,
-        user_id=document.user_id,
-        original_filename=document.filename,
-        document_id=str(document_id),
-    )
-
-    return {
-        "status": "processing",
-        "engine": engine,
-        "document_id": str(document_id),
-        "message": f"Processing with {engine}. Please wait...",
-    }
 
 
 @router.get("/{document_id}/status", response_model=DocumentSchema)
@@ -222,9 +226,9 @@ async def cancel_document(
     db: AsyncSession = Depends(get_db_session),
 ) -> Any:
     """
-    Cancel document processing and rollback:
-    - Delete Qdrant chunks
-    - Delete uploaded file
+    Cancel/delete a document:
+    - Delete all Qdrant vectors (by document_id and by filename)
+    - Delete uploaded file from disk
     - Delete DB record
     """
     result = await db.execute(select(Document).where(Document.id == document_id))
@@ -232,18 +236,20 @@ async def cancel_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Rollback: delete Qdrant chunks
     _delete_qdrant_chunks(str(document_id))
+    _delete_qdrant_chunks_by_filename(document.filename, document.user_id)
 
-    # Delete file
     if document.file_path and os.path.exists(document.file_path):
         os.remove(document.file_path)
 
-    # Delete DB record
     await db.delete(document)
     await db.commit()
 
-    return {"status": "cancelled", "document_id": str(document_id), "message": "Document deleted and all chunks rolled back."}
+    return {
+        "status": "cancelled",
+        "document_id": str(document_id),
+        "message": "Tài liệu đã bị xóa và toàn bộ chunks đã được dọn sạch.",
+    }
 
 
 @router.get("/{document_id}/download")
@@ -251,27 +257,36 @@ async def download_document(
     document_id: UUID,
     db: AsyncSession = Depends(get_db_session),
 ) -> Any:
-    """Preview/open the uploaded document file in browser (inline, not download)."""
+    """Preview/open the uploaded document file inline in browser."""
     result = await db.execute(select(Document).where(Document.id == document_id))
     document = result.scalar_one_or_none()
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
-    if not document.file_path or not os.path.exists(document.file_path):
+
+    target_path = document.file_path
+    target_filename = document.filename
+
+    # Use preview PDF if available (e.g. PPTX converted to PDF)
+    if document.meta and document.meta.get("preview_pdf_path"):
+        preview_path = document.meta.get("preview_pdf_path")
+        if os.path.exists(preview_path):
+            target_path = preview_path
+            target_filename = document.filename.rsplit(".", 1)[0] + ".pdf"
+
+    if not target_path or not os.path.exists(target_path):
         raise HTTPException(status_code=404, detail="File not found on disk")
 
-    # Detect MIME type for inline preview
-    content_type, _ = mimetypes.guess_type(document.filename or document.file_path)
+    content_type, _ = mimetypes.guess_type(target_filename)
     if not content_type:
         content_type = "application/octet-stream"
 
-    # RFC 5987 encoding for non-ASCII filenames
     from urllib.parse import quote
-    safe_name = quote(document.filename, safe='')
+    safe_name = quote(target_filename, safe="")
     disposition = f"inline; filename*=UTF-8''{safe_name}"
 
     return FileResponse(
-        path=document.file_path,
-        filename=None,  # Don't let FileResponse set filename (causes latin-1 error)
+        path=target_path,
+        filename=None,
         media_type=content_type,
         headers={"Content-Disposition": disposition},
     )
@@ -283,24 +298,25 @@ async def find_document_by_name(
     user_id: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db_session),
 ) -> Any:
-    """Find a document by filename. Returns doc info for download link."""
-    # Normalize Unicode for Vietnamese filenames (NFC vs NFD)
-    normalized = unicodedata.normalize('NFC', filename)
+    """Find a document by filename."""
+    normalized = unicodedata.normalize("NFC", filename)
     query = select(Document).where(Document.filename == normalized)
     if user_id:
         query = query.where(Document.user_id == user_id)
-    query = query.order_by(Document.created_at.desc())
-    result = await db.execute(query)
+    result = await db.execute(query.order_by(Document.created_at.desc()))
     document = result.scalars().first()
-    # Fallback: try original (non-normalized) filename
+
+    # Fallback: try non-normalized filename
     if not document:
         query2 = select(Document).where(Document.filename == filename)
         if user_id:
             query2 = query2.where(Document.user_id == user_id)
         result2 = await db.execute(query2.order_by(Document.created_at.desc()))
         document = result2.scalars().first()
+
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+
     return {
         "document_id": str(document.id),
         "filename": document.filename,
@@ -320,4 +336,3 @@ async def list_documents(
         .order_by(Document.created_at.desc())
     )
     return result.scalars().all()
-

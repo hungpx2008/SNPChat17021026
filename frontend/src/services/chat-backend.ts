@@ -92,6 +92,9 @@ export interface BackendMessage {
   content: string;
   metadata?: Record<string, unknown>;
   created_at: string;
+  parent_message_id?: string | null;
+  branch_index?: number;
+  is_active_branch?: boolean;
 }
 
 export interface BackendSessionWithMessages extends BackendSession {
@@ -112,7 +115,7 @@ export interface SearchResult {
 export interface DocumentInfo {
   id: string;
   filename: string;
-  status: 'processing' | 'awaiting_choice' | 'ready' | 'error';
+  status: 'processing' | 'ready' | 'error';
   chunk_count: number;
   extractor_used: string | null;
   error_message: string | null;
@@ -124,6 +127,29 @@ export interface Attachment {
   type: 'chart' | 'audio' | 'document';
   url: string;
   filename?: string;
+}
+
+export interface BranchInfo {
+  current_index: number;
+  total_branches: number;
+  sibling_ids: string[];
+  fork_point_id: string | null;
+}
+
+export interface TreeNode {
+  id: string;
+  role: string;
+  content: string;
+  parent_id: string | null;
+  branch_index: number;
+  is_active: boolean;
+  created_at: string;
+  children: TreeNode[];
+}
+
+export interface ConversationTree {
+  session_id: string;
+  roots: TreeNode[];
 }
 
 export const chatBackend = {
@@ -153,7 +179,7 @@ export const chatBackend = {
 
   async appendMessage(
     sessionId: string,
-    payload: { role: 'user' | 'assistant' | 'system'; content: string; metadata?: any; mode?: 'chat' | 'sql' | 'rag' },
+    payload: { role: 'user' | 'assistant' | 'system'; content: string; metadata?: any; mode?: 'auto' | 'chat' | 'sql' | 'rag' },
   ): Promise<BackendMessage> {
     return request<BackendMessage>(`/sessions/${sessionId}/messages`, {
       method: 'POST',
@@ -178,13 +204,11 @@ export const chatBackend = {
   async uploadDocument(
     file: File,
     userId: string,
-    forceDeepScan: boolean = false,
     overwrite: boolean = false,
   ): Promise<{ document_id: string; filename: string; status: string; message: string }> {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('user_id', userId);
-    formData.append('force_deep_scan', String(forceDeepScan));
     if (overwrite) {
       formData.append('overwrite', 'true');
     }
@@ -235,17 +259,6 @@ export const chatBackend = {
     });
   },
 
-  async chooseDocumentEngine(
-    documentId: string,
-    engine: 'kreuzberg' | 'docling',
-  ): Promise<{ status: string; engine: string; document_id: string; message: string }> {
-    return request<{ status: string; engine: string; document_id: string; message: string }>(
-      `/upload/${documentId}/process`,
-      { method: 'POST' },
-      { engine },
-    );
-  },
-
   // ----- Feedback API -----
 
   /** Build the direct URL to preview/download a document file. */
@@ -266,6 +279,52 @@ export const chatBackend = {
         reason: reason || undefined,
       }),
     });
+  },
+
+  // ----- Branching APIs -----
+
+  async editMessage(
+    sessionId: string,
+    messageId: string,
+    content: string,
+  ): Promise<BackendMessage> {
+    return request<BackendMessage>(`/sessions/${sessionId}/messages/${messageId}/edit`, {
+      method: 'POST',
+      body: JSON.stringify({ content }),
+    });
+  },
+
+  async regenerateMessage(
+    sessionId: string,
+    messageId: string,
+  ): Promise<BackendMessage> {
+    return request<BackendMessage>(`/sessions/${sessionId}/messages/${messageId}/regenerate`, {
+      method: 'POST',
+    });
+  },
+
+  async getBranchInfo(
+    sessionId: string,
+    messageId: string,
+  ): Promise<BranchInfo> {
+    return request<BranchInfo>(`/sessions/${sessionId}/messages/${messageId}/branches`);
+  },
+
+  async navigateBranch(
+    sessionId: string,
+    messageId: string,
+    direction: 'prev' | 'next',
+  ): Promise<BackendMessage[]> {
+    return request<BackendMessage[]>(`/sessions/${sessionId}/messages/${messageId}/navigate`, {
+      method: 'POST',
+      body: JSON.stringify({ direction }),
+    });
+  },
+
+  async getConversationTree(
+    sessionId: string,
+  ): Promise<ConversationTree> {
+    return request<ConversationTree>(`/sessions/${sessionId}/tree`);
   },
 };
 

@@ -63,9 +63,9 @@ def ensure_collections(client: QdrantClient, vector_size: int) -> None:
                 vectors_config=qmodels.VectorParams(size=vector_size, distance=qmodels.Distance.COSINE),
             )
 
-    # Payload indexes for fast filtered search on user_id, session_id, department
+    # Payload indexes for fast filtered search on user_id, session_id, department, quality
     _ensure_payload_indexes(client, "chat_chunks", ["user_id", "session_id", "department"])
-    _ensure_payload_indexes(client, "port_knowledge", ["user_id", "department"])
+    _ensure_payload_indexes(client, "port_knowledge", ["user_id", "department", "quality", "document_id", "source_file", "parent_id"])
 
 
 def upsert_vectors(

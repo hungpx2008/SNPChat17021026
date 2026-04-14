@@ -8,6 +8,12 @@ import type { AgentMode } from './chat-composer';
 type ProcessingMode = Exclude<AgentMode, 'chat'>;
 
 const STATUS_MESSAGES: Record<ProcessingMode, string[]> = {
+    auto: [
+        'Đang phân tích...',
+        'Đang nhận diện ý định câu hỏi...',
+        'Đang chọn phương thức xử lý...',
+        'Đang biên soạn câu trả lời...',
+    ],
     sql: [
         'Đang phân tích câu hỏi số liệu...',
         'Đang soạn câu lệnh SQL...',

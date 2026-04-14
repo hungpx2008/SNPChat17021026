@@ -10,7 +10,6 @@ class Settings(BaseSettings):
     redis_url: str = Field("redis://localhost:6379/0", alias="REDIS_URL")
     qdrant_http_url: str = Field("http://localhost:6333", alias="QDRANT_URL")
     qdrant_grpc_url: str | None = Field(None, alias="QDRANT_GRPC_URL")
-    mem0_url: str = Field("http://mem0:8000", alias="MEM0_URL")
     embedding_dimension: int = Field(1024, alias="EMBEDDING_DIMENSION")
     embedding_model: str = Field("thanhtantran/Vietnamese_Embedding_v2", alias="EMBEDDING_MODEL")
     embedding_device: str = Field("cpu", alias="EMBEDDING_DEVICE")
@@ -24,7 +23,14 @@ class Settings(BaseSettings):
     openrouter_api_key: str | None = Field(None, alias="OPENROUTER_API_KEY")
     llm_model: str = Field("openai/gpt-5-nano", alias="LLM_MODEL")
 
-    allowed_origins: Any = Field(default_factory=lambda: ["*"], alias="CORS_ALLOW_ORIGINS")
+    allowed_origins: Any = Field(
+        default_factory=lambda: [
+            "http://localhost:3000",
+            "http://localhost:9002",
+            "https://chatsnp2.cntt-snp.online",
+        ],
+        alias="CORS_ALLOW_ORIGINS",
+    )
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="allow")
 

@@ -21,10 +21,12 @@ import {
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state"
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
-const SIDEBAR_WIDTH = "16rem"
+const SIDEBAR_WIDTH = 256
 const SIDEBAR_WIDTH_MOBILE = "18rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
+const SIDEBAR_MIN_WIDTH = 200
+const SIDEBAR_MAX_WIDTH = 800
 
 type SidebarContext = {
   state: "expanded" | "collapsed"
@@ -34,6 +36,10 @@ type SidebarContext = {
   setOpenMobile: (open: boolean) => void
   isMobile: boolean
   toggleSidebar: () => void
+  sidebarWidth: number
+  setSidebarWidth: (width: number) => void
+  isResizing: boolean
+  setIsResizing: (isResizing: boolean) => void
 }
 
 const SidebarContext = React.createContext<SidebarContext | null>(null)
@@ -69,6 +75,19 @@ const SidebarProvider = React.forwardRef<
   ) => {
     const isMobile = useIsMobile()
     const [openMobile, setOpenMobile] = React.useState(false)
+
+    // Resize state
+    const [sidebarWidth, setSidebarWidth] = React.useState<number>(SIDEBAR_WIDTH)
+    const [isResizing, setIsResizing] = React.useState(false)
+
+    React.useEffect(() => {
+      const saved = localStorage.getItem("sidebar_width")
+      if (saved) setSidebarWidth(Number(saved))
+    }, [])
+
+    React.useEffect(() => {
+      if (!isResizing) localStorage.setItem("sidebar_width", String(sidebarWidth))
+    }, [isResizing, sidebarWidth])
 
     // This is the internal state of the sidebar.
     // We use openProp and setOpenProp for control from outside the component.
@@ -125,8 +144,12 @@ const SidebarProvider = React.forwardRef<
         openMobile,
         setOpenMobile,
         toggleSidebar,
+        sidebarWidth,
+        setSidebarWidth,
+        isResizing,
+        setIsResizing,
       }),
-      [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar]
+      [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, sidebarWidth, isResizing]
     )
 
     return (
@@ -135,7 +158,7 @@ const SidebarProvider = React.forwardRef<
           <div
             style={
               {
-                "--sidebar-width": SIDEBAR_WIDTH,
+                "--sidebar-width": `${sidebarWidth}px`,
                 "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
                 ...style,
               } as React.CSSProperties
@@ -175,7 +198,7 @@ const Sidebar = React.forwardRef<
     },
     ref
   ) => {
-    const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
+    const { isMobile, state, openMobile, setOpenMobile, isResizing } = useSidebar()
 
     if (collapsible === "none") {
       return (
@@ -227,7 +250,8 @@ const Sidebar = React.forwardRef<
         {/* This is what handles the sidebar gap on desktop */}
         <div
           className={cn(
-            "duration-200 relative h-svh w-[--sidebar-width] bg-transparent transition-[width] ease-linear",
+            "relative h-svh w-[--sidebar-width] bg-transparent ease-linear",
+            !isResizing && "transition-[width] duration-200",
             "group-data-[collapsible=offcanvas]:w-0",
             "group-data-[side=right]:rotate-180",
             variant === "floating" || variant === "inset"
@@ -237,7 +261,8 @@ const Sidebar = React.forwardRef<
         />
         <div
           className={cn(
-            "duration-200 fixed inset-y-0 z-10 hidden h-svh w-[--sidebar-width] transition-[left,right,width] ease-linear md:flex",
+            "fixed inset-y-0 z-10 hidden h-svh w-[--sidebar-width] ease-linear md:flex",
+            !isResizing && "transition-[left,right,width] duration-200",
             side === "left"
               ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
               : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
@@ -292,7 +317,37 @@ const SidebarRail = React.forwardRef<
   HTMLButtonElement,
   React.ComponentProps<"button">
 >(({ className, ...props }, ref) => {
-  const { toggleSidebar } = useSidebar()
+  const { toggleSidebar, isResizing, setIsResizing, setSidebarWidth } = useSidebar()
+  const [isDragged, setIsDragged] = React.useState(false)
+
+  const handleMouseDown = React.useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsResizing(true)
+    setIsDragged(false)
+  }, [setIsResizing])
+
+  React.useEffect(() => {
+    if (!isResizing) return
+    const handleMouseMove = (e: MouseEvent) => {
+      let limit = e.clientX
+      limit = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, limit))
+      setSidebarWidth(limit)
+      setIsDragged(true)
+    }
+    const handleMouseUp = (e: MouseEvent) => {
+      setIsResizing(false)
+      document.body.style.cursor = ""
+    }
+    document.body.style.cursor = "col-resize"
+    document.addEventListener("mousemove", handleMouseMove)
+    document.addEventListener("mouseup", handleMouseUp)
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove)
+      document.removeEventListener("mouseup", handleMouseUp)
+      document.body.style.cursor = ""
+    }
+  }, [isResizing, setSidebarWidth, setIsResizing])
 
   return (
     <button
@@ -300,15 +355,19 @@ const SidebarRail = React.forwardRef<
       data-sidebar="rail"
       aria-label="Toggle Sidebar"
       tabIndex={-1}
-      onClick={toggleSidebar}
+      onMouseDown={handleMouseDown}
+      onClick={(e) => {
+        if (!isDragged) {
+          toggleSidebar()
+        }
+      }}
       title="Toggle Sidebar"
       className={cn(
-        "absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-all ease-linear after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] hover:after:bg-sidebar-border group-data-[side=left]:-right-4 group-data-[side=right]:left-0 sm:flex",
-        "[[data-side=left]_&]:cursor-w-resize [[data-side=right]_&]:cursor-e-resize",
+        "absolute inset-y-0 z-50 hidden w-6 right-[-12px] bg-transparent transition-all sm:flex align-center justify-center cursor-col-resize cursor-ew-resize",
+        "after:absolute after:inset-y-0 after:w-[2px] hover:after:bg-sidebar-border",
         "[[data-side=left][data-state=collapsed]_&]:cursor-e-resize [[data-side=right][data-state=collapsed]_&]:cursor-w-resize",
-        "group-data-[collapsible=offcanvas]:translate-x-0 group-data-[collapsible=offcanvas]:after:left-full group-data-[collapsible=offcanvas]:hover:bg-sidebar",
-        "[[data-side=left][data-collapsible=offcanvas]_&]:-right-2",
-        "[[data-side=right][data-collapsible=offcanvas]_&]:-left-2",
+        "group-data-[collapsible=offcanvas]:translate-x-0 group-data-[collapsible=offcanvas]:after:left-full",
+        isResizing && "after:bg-sidebar-border",
         className
       )}
       {...props}
@@ -617,7 +676,7 @@ const SidebarMenuAction = React.forwardRef<
         "peer-data-[size=lg]/menu-button:top-2.5",
         "group-data-[collapsible=icon]:hidden",
         showOnHover &&
-          "group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 data-[state=open]:opacity-100 peer-data-[active=true]/menu-button:text-sidebar-accent-foreground md:opacity-0",
+        "group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 data-[state=open]:opacity-100 peer-data-[active=true]/menu-button:text-sidebar-accent-foreground md:opacity-0",
         className
       )}
       {...props}

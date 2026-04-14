@@ -2,7 +2,7 @@
 Vanna Setup — Text-to-SQL with Unified Vietnamese Embedding.
 
 EMBEDDING STRATEGY (unified):
-  All components use Vietnamese_Embedding_v2 (1024 dim) via Mem0 /embed:
+  All components use Vietnamese_Embedding_v2 (1024 dim) via sentence-transformers:
   - Vanna SQL schemas    → Qdrant: vanna_schemas_openai (1024 dim)
   - RAG document chunks  → Qdrant: port_knowledge (1024 dim)
   - Chat history chunks  → Qdrant: chat_chunks (1024 dim)
@@ -13,7 +13,6 @@ Uses lazy initialization to avoid crash when Postgres/Qdrant not ready at import
 import logging
 import os
 
-import httpx
 from vanna.legacy.openai import OpenAI_Chat
 from vanna.legacy.qdrant import Qdrant_VectorStore
 from qdrant_client import QdrantClient
@@ -22,14 +21,12 @@ from sqlalchemy.engine.url import make_url
 
 logger = logging.getLogger(__name__)
 
-# Unified embedding: Vietnamese_Embedding_v2 (1024 dim) via Mem0 /embed
+# Unified embedding: Vietnamese_Embedding_v2 (1024 dim)
 VANNA_EMBEDDING_DIM = 1024
 
 
 class CustomVanna(Qdrant_VectorStore, OpenAI_Chat):
     def __init__(self, config=None):
-        self._mem0_url = config.get("mem0_url", "http://mem0:8000")
-
         # Initialize OpenAI Chat (for LLM, NOT for embeddings)
         OpenAI_Chat.__init__(self, config=config)
         # Initialize Qdrant Store (triggers setup_collections -> generate_embedding)
@@ -37,7 +34,7 @@ class CustomVanna(Qdrant_VectorStore, OpenAI_Chat):
 
     def generate_embedding(self, data: str, **kwargs) -> list[float]:
         """
-        Generate embeddings via Mem0 /embed endpoint.
+        Generate embeddings via sentence-transformers (local).
         Uses Vietnamese_Embedding_v2 (1024 dim) — same model as RAG/chat_chunks.
         """
         data = data.replace("\n", " ").strip()
@@ -45,15 +42,10 @@ class CustomVanna(Qdrant_VectorStore, OpenAI_Chat):
             return [0.0] * VANNA_EMBEDDING_DIM
 
         try:
-            with httpx.Client(timeout=30.0) as client:
-                resp = client.post(
-                    f"{self._mem0_url.rstrip('/')}/embed",
-                    json={"text": data},
-                )
-                resp.raise_for_status()
-                return resp.json()["vector"]
+            from src.worker.chat_tasks import embed_query
+            return embed_query(data)
         except Exception as e:
-            logger.error(f"[vanna] Embedding failed via Mem0: {e}")
+            logger.error(f"[vanna] Embedding failed: {e}")
             raise
 
 
@@ -77,14 +69,12 @@ def get_vanna():
             return None
 
         qdrant_client = QdrantClient(url=settings.qdrant_http_url)
-        mem0_url = os.getenv("MEM0_URL", "http://mem0:8000")
 
         _vn_instance = CustomVanna(config={
             'client': qdrant_client,
             'api_key': api_key,
             'base_url': settings.openai_base_url,
             'model': settings.llm_model,
-            'mem0_url': mem0_url,
             # Vanna collection — now 1024 dim (same as everything else)
             'collection_name': 'vanna_schemas_openai',
         })
@@ -103,7 +93,7 @@ def get_vanna():
         )
 
         logger.info(
-            "Vanna initialized: embedding=Vietnamese_Embedding_v2 (%d dim) via Mem0, "
+            "Vanna initialized: embedding=Vietnamese_Embedding_v2 (%d dim) local, "
             "collection=vanna_schemas_openai",
             VANNA_EMBEDDING_DIM,
         )
