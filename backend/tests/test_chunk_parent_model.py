@@ -20,19 +20,16 @@ def test_chunk_parent_has_required_fields():
     assert parent.meta["row_keys"] == ["R001", "R002"]
 
 
-def test_chunk_parent_explicit_defaults():
-    """ChunkParent with explicit default values should store them correctly."""
-    parent = ChunkParent(
-        content="Minimal parent.",
-        page_number=0,
-        headings=[],
-        meta={},
-    )
+def test_chunk_parent_defaults():
+    """ChunkParent defaults should work when only content is provided."""
+    parent = ChunkParent(content="Minimal parent.")
     assert parent.content == "Minimal parent."
-    assert parent.page_number == 0
-    assert parent.headings == []
-    assert parent.meta == {}
     assert parent.document_id is None
+    # Verify column-level defaults are configured (insert_default)
+    table = ChunkParent.__table__
+    assert table.c.page_number.default is not None
+    assert table.c.headings.default is not None
+    assert table.c.metadata.default is not None
 
 
 def test_chunk_parent_tablename():

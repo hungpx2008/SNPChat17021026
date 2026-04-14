@@ -140,6 +140,6 @@ class ChunkParent(Base):
     )
     content: Mapped[str] = mapped_column(Text(), nullable=False)
     page_number: Mapped[int] = mapped_column(default=0, insert_default=0)
-    headings: Mapped[dict] = mapped_column("headings", JSON, default=list, insert_default=list)
+    headings: Mapped[list] = mapped_column("headings", JSON, default=list, insert_default=list)
     meta: Mapped[dict] = mapped_column("metadata", JSON, default=dict, insert_default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
