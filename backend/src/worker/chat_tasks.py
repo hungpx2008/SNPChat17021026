@@ -19,7 +19,7 @@ from .celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 BACKEND_INTERNAL_URL = os.getenv("BACKEND_INTERNAL_URL", "http://backend:8000")
-MEM0_DEFAULT_URL = "http://mem0:8000"
+# Mem0 is now local (no HTTP) — see src.core.mem0_local
 
 # Minimum cosine similarity score for a retrieved chunk to be included in RAG context.
 # Chunks below this threshold are discarded even if they are "top-k".
@@ -34,16 +34,26 @@ _hf_embed_model_name: str | None = None
 
 
 def _get_hf_embed_model():
-    """Return a cached HuggingFaceEmbedding instance (loaded once per Celery worker)."""
+    """Return a cached SentenceTransformer instance (loaded once per Celery worker).
+
+    Replaces the previous LlamaIndex HuggingFaceEmbedding wrapper.
+    Uses sentence-transformers directly for lower overhead and fewer dependencies.
+    """
     global _hf_embed_model, _hf_embed_model_name  # noqa: PLW0603
     model_name = os.getenv("EMBEDDING_MODEL", "thanhtantran/Vietnamese_Embedding_v2")
     if _hf_embed_model is None or _hf_embed_model_name != model_name:
-        from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-        logger.info(f"[RAG] Loading HuggingFace embedding model: {model_name}")
-        _hf_embed_model = HuggingFaceEmbedding(model_name=model_name)
+        from sentence_transformers import SentenceTransformer
+        logger.info(f"[RAG] Loading SentenceTransformer embedding model: {model_name}")
+        _hf_embed_model = SentenceTransformer(model_name)
         _hf_embed_model_name = model_name
-        logger.info(f"[RAG] Embedding model loaded and cached.")
+        logger.info("[RAG] Embedding model loaded and cached.")
     return _hf_embed_model
+
+
+def embed_query(text: str) -> list[float]:
+    """Embed a single query string into a vector using the cached model."""
+    model = _get_hf_embed_model()
+    return model.encode(text, normalize_embeddings=True).tolist()
 
 
 # =============================================================================
@@ -74,21 +84,10 @@ def process_chat_response(
         if not chunks:
             return {"status": "ok", "message_id": message_id, "chunks": 0}
 
-        # 2. Embed each chunk via Mem0 — parallel with ThreadPoolExecutor
-        mem0_url = os.getenv("MEM0_URL", MEM0_DEFAULT_URL)
-        embed_url = f"{mem0_url.rstrip('/')}/embed"
-
-        def _embed_chunk(chunk_text: str) -> list[float] | None:
-            from src.core.http_client import get_http_client
-            resp = get_http_client(timeout=30.0).post(embed_url, json={"text": chunk_text})
-            if resp.status_code != 200:
-                logger.warning(f"[mem0] Embed failed: {resp.status_code}")
-                return None
-            return resp.json()["vector"]
-
+        # 2. Embed each chunk locally (sentence-transformers)
         chunk_texts = [t for t, _ in chunks]
         with ThreadPoolExecutor(max_workers=min(len(chunk_texts), 8)) as pool:
-            vectors = list(pool.map(_embed_chunk, chunk_texts))
+            vectors = list(pool.map(embed_query, chunk_texts))
 
         if any(v is None for v in vectors):
             return {"status": "warning", "message_id": message_id}
@@ -137,27 +136,18 @@ def store_memory(
     """
     logger.info(f"[chat_priority] Storing memory for user {user_id}")
     try:
-        from src.core.http_client import get_http_client
-        mem0_url = os.getenv("MEM0_URL", MEM0_DEFAULT_URL)
+        from src.core.mem0_local import add_memory
 
-        client = get_http_client(timeout=300.0)
-        resp = client.post(
-            f"{mem0_url.rstrip('/')}/memories",
-            json={
-                "messages": [{"role": role, "content": content}],
-                "user_id": user_id,
-                "metadata": {
-                    "session_id": session_id,
-                    "department": department,
-                },
+        add_memory(
+            messages=[{"role": role, "content": content}],
+            user_id=user_id,
+            metadata={
+                "session_id": session_id,
+                "department": department,
             },
         )
-        if resp.status_code in (200, 201):
-            logger.info(f"[mem0] Memory stored for user {user_id}")
-            return {"status": "ok", "user_id": user_id}
-        else:
-            logger.warning(f"[mem0] Store failed: {resp.status_code} {resp.text[:200]}")
-            return {"status": "warning", "user_id": user_id, "detail": resp.text[:200]}
+        logger.info(f"[mem0] Memory stored for user {user_id}")
+        return {"status": "ok", "user_id": user_id}
 
     except Exception as exc:
         logger.exception(f"Error storing memory: {exc}")
@@ -206,34 +196,6 @@ def _build_qdrant_filter(user_id: str | None, department: str | None):
     return Filter(must_not=must_not_conditions)
 
 
-def _extract_node_metadata(node_with_score) -> dict[str, Any]:
-    """Extract metadata (filename, page, doc_id, headings) from a LlamaIndex node."""
-    try:
-        meta = node_with_score.node.metadata or {}
-    except Exception:
-        meta = {}
-    fname = meta.get("source_file", "Tài liệu")
-    page = (
-        meta.get("page_number") or meta.get("page")
-        or meta.get("page_no") or meta.get("pageIndex")
-        or meta.get("page_index")
-    )
-    doc_id = meta.get("document_id")
-    headings = meta.get("headings", [])
-    try:
-        page = int(page) if page is not None else None
-    except Exception:
-        page = None
-    page_display = page if page is not None else meta.get("chunk_index", "?")
-
-    return {
-        "file": fname,
-        "page": page_display,
-        "doc_id": doc_id,
-        "headings": headings if isinstance(headings, list) else [headings] if headings else [],
-    }
-
-
 def _clean_snippet_text(text: str) -> str:
     """Sanitize raw snippet text before sending to LLM.
 
@@ -269,91 +231,16 @@ def _clean_snippet_text(text: str) -> str:
     return text.strip()
 
 
-def _extract_snippet(node_with_score) -> str:
-    """Extract clean text content from a LlamaIndex node (no metadata)."""
-    if hasattr(node_with_score, "text") and node_with_score.text:
-        return _clean_snippet_text(node_with_score.text)
-    try:
-        raw = node_with_score.node.get_content(metadata_mode="none").strip()
-        return _clean_snippet_text(raw)
-    except Exception:
-        return _clean_snippet_text(str(node_with_score))
-
-
-def _build_context_and_citations(top_nodes: list) -> tuple[list[dict[str, Any]], list[str]]:
-    """Parse retrieval nodes into deduplicated citations and context blocks.
-
-    Deduplication strategy:
-    - cite_key = (filename, page): same page from same doc counts as ONE citation
-    - content_hash: near-duplicate snippets (first 200 chars) are dropped entirely
-    """
-    citations: list[dict[str, Any]] = []
-    context_blocks: list[str] = []
-    seen_citations: set[str] = set()
-    seen_content: set[int] = set()
-
-    for node in top_nodes:
-        meta = _extract_node_metadata(node)
-        fname = meta["file"]
-        page_display = meta["page"]
-        doc_id = meta["doc_id"]
-        headings = meta["headings"]
-
-        snippet = _extract_snippet(node)
-
-        if not snippet:
-            continue
-
-        content_hash = hash(snippet.strip()[:200])
-        # Drop exact-duplicate content regardless of source
-        if content_hash in seen_content:
-            continue
-        seen_content.add(content_hash)
-
-        # Append image download hint for image documents
-        ext = fname.lower().split('.')[-1] if '.' in fname else ""
-        if ext in ["jpg", "jpeg", "png"] and doc_id:
-            snippet += f"\n[LƯU Ý QUAN TRỌNG: Link Tải ảnh gốc là `/api/upload/{doc_id}/download`]"
-
-        # Phân biệt citation bằng file + page + heading (gần nhau)
-        heading_key = "|".join(str(h) for h in headings[:2]) if headings else ""
-        cite_key = f"{fname}|{page_display}|{heading_key}"
-
-        if cite_key not in seen_citations:
-            seen_citations.add(cite_key)
-            score = getattr(node, "score", None)
-            citations.append({
-                "index": len(citations) + 1,
-                "file": fname,
-                "page": page_display,
-                "headings": headings,
-                "score": round(score, 3) if score else None,
-            })
-
-        # Always safe: cite_key is guaranteed to be in citations at this point
-        # Tìm citation dựa trên metadata hiện tại
-        cite_idx = next(
-            c["index"] for c in citations 
-            if c["file"] == fname and c["page"] == page_display and c.get("headings", []) == headings
-        )
-        context_blocks.append(f"[{cite_idx}] {snippet}")
-
-    return citations, context_blocks
-
 
 def _fetch_mem0_memories(question: str, user_id: str) -> list[str]:
-    """Fetch long-term memories from Mem0 service (best effort)."""
+    """Fetch long-term memories from Mem0 (local, no HTTP)."""
     try:
-        from src.core.http_client import get_http_client
-        mem0_url = os.getenv("MEM0_URL", MEM0_DEFAULT_URL)
-        client = get_http_client(timeout=10.0)
-        resp = client.post(
-            f"{mem0_url.rstrip('/')}/search",
-            json={"query": question, "user_id": user_id, "limit": 5},
-        )
-        if resp.status_code != 200:
-            return []
-        results = resp.json().get("results") or []
+        from src.core.mem0_local import search_memories
+
+        result = search_memories(query=question, user_id=user_id, limit=5)
+        results = result.get("results") or result if isinstance(result, list) else []
+        if isinstance(result, dict):
+            results = result.get("results", [])
         return [
             item.get("text") or item.get("memory") or ""
             for item in results
@@ -704,46 +591,39 @@ def _fallback_semantic_search(
 ) -> list:
     """Pure semantic fallback when hybrid search returns no results.
 
-    Returns a list of SearchResult-like objects for compatibility.
+    Uses direct Qdrant client instead of LlamaIndex wrapper.
+    Returns a list of SearchResult objects for compatibility.
     """
-    from llama_index.core import Settings, StorageContext, VectorStoreIndex
-    from llama_index.vector_stores.qdrant import QdrantVectorStore
-    from qdrant_client import QdrantClient
-
+    from src.core.qdrant_setup import get_qdrant_client
     from src.services.search.hybrid_search import SearchResult
 
-    Settings.embed_model = _get_hf_embed_model()
-    Settings.llm = None
+    query_vector = embed_query(question)
+    qdrant = get_qdrant_client()
+    qdrant_filter = _build_qdrant_filter(user_id, department)
 
-    qdrant = QdrantClient(url=os.getenv("QDRANT_URL", "http://qdrant:6333"))
-    vector_store = QdrantVectorStore(client=qdrant, collection_name="port_knowledge")
-    storage_ctx = StorageContext.from_defaults(vector_store=vector_store)
-    index = VectorStoreIndex.from_vector_store(
-        vector_store=vector_store, storage_context=storage_ctx
-    )
-
-    retriever = index.as_retriever(
-        similarity_top_k=5,
-        vector_store_kwargs={"filter": _build_qdrant_filter(user_id, department)},
-    )
-    nodes = list(retriever.retrieve(question))
+    points = qdrant.query_points(
+        collection_name="port_knowledge",
+        query=query_vector,
+        query_filter=qdrant_filter,
+        limit=5,
+    ).points
 
     results = []
-    for node in nodes:
-        score = getattr(node, "score", 0.0) or 0.0
+    for point in points:
+        score = getattr(point, "score", 0.0) or 0.0
         if score < RAG_SCORE_THRESHOLD:
             continue
-        meta = getattr(node.node, "metadata", {}) or {}
-        text = node.node.get_content() if hasattr(node.node, "get_content") else ""
+        payload = point.payload or {}
+        content = payload.get("content", "")
         results.append(SearchResult(
-            doc_id=node.node.node_id or "",
-            title=meta.get("source_file", ""),
-            content=text,
-            tags=",".join(meta.get("headings", [])),
+            doc_id=str(point.id) if point.id else "",
+            title=payload.get("source_file", ""),
+            content=content,
+            tags=",".join(payload.get("headings", [])),
             score=score,
             semantic_score=score,
             source="semantic",
-            metadata=meta,
+            metadata=payload,
         ))
     return results
 
@@ -819,11 +699,7 @@ def _resolve_parent_content(hybrid_results: list) -> list:
 def _build_hybrid_context_and_citations(
     hybrid_results: list,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Build context blocks and citations from hybrid search results.
-
-    Mirrors ``_build_context_and_citations`` but works with ``SearchResult`` objects
-    instead of LlamaIndex NodeWithScore objects.
-    """
+    """Build context blocks and citations from hybrid search results."""
     citations: list[dict[str, Any]] = []
     context_blocks: list[str] = []
     seen_citations: set[str] = set()
@@ -1119,15 +995,7 @@ def process_feedback(
             # Note: we embed msg_content (the bot answer); a better proxy would be the user
             # question, but we don't have it here without a DB join. This is still better
             # than the previous approach of embedding the answer with wrong intent.
-            from src.core.http_client import get_http_client
-            mem0_url = os.getenv("MEM0_URL", MEM0_DEFAULT_URL)
-            client = get_http_client(timeout=30.0)
-            resp = client.post(
-                f"{mem0_url.rstrip('/')}/embed",
-                json={"text": msg_content[:500]},
-            )
-            resp.raise_for_status()
-            query_vector = resp.json()["vector"]
+            query_vector = embed_query(msg_content[:500])
 
             matches = qdrant.query_points(
                 collection_name="port_knowledge",

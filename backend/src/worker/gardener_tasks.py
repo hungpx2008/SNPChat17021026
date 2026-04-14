@@ -29,8 +29,12 @@ def consolidate_memories(self) -> dict[str, Any]:
     try:
         from src.core.http_client import get_http_client
         from src.core.database_pool import db_pool
+        from src.core.mem0_local import (
+            get_all_memories,
+            update_memory as mem0_update,
+            delete_memory as mem0_delete,
+        )
 
-        mem0_url = os.getenv("MEM0_URL", "http://mem0:8000")
         openai_key = os.getenv("OPENAI_API_KEY", "")
         openai_base = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
         llm_model = os.getenv("LLM_MODEL", "openai/gpt-5-nano")
@@ -46,15 +50,8 @@ def consolidate_memories(self) -> dict[str, Any]:
 
         for uid in user_ids:
             try:
-                # 1. Fetch all memories for this user
-                resp = client.get(
-                    f"{mem0_url.rstrip('/')}/memories",
-                    params={"user_id": uid},
-                )
-                if resp.status_code != 200:
-                    logger.warning(f"[gardener] Fetch memories failed for {uid}: {resp.status_code}")
-                    continue
-                memories = resp.json()
+                # 1. Fetch all memories for this user (local, no HTTP)
+                memories = get_all_memories(user_id=uid)
 
                 if not memories or len(memories) < 2:
                     continue  # Nothing to consolidate
@@ -108,22 +105,19 @@ def consolidate_memories(self) -> dict[str, Any]:
                 llm_resp.raise_for_status()
                 analysis = json.loads(llm_resp.json()["choices"][0]["message"]["content"])
 
-                # 3. Apply scores
+                # 3. Apply scores (local mem0)
                 scores = analysis.get("scores", [])
                 for s in scores:
                     mid = s.get("id")
                     score = s.get("score")
                     if mid and isinstance(score, (int, float)):
                         try:
-                            client.put(
-                                f"{mem0_url.rstrip('/')}/memories/{mid}",
-                                json={"metadata": {"importance_score": int(score)}},
-                            )
+                            mem0_update(mid, {"metadata": {"importance_score": int(score)}})
                             stats["facts_updated"] += 1
                         except Exception:
                             pass
 
-                # 4. Apply merges
+                # 4. Apply merges (local mem0)
                 merges = analysis.get("merges", [])
                 for merge in merges:
                     keep_id = merge.get("keep_id")
@@ -131,13 +125,8 @@ def consolidate_memories(self) -> dict[str, Any]:
                     merged_text = merge.get("merged_text")
                     if keep_id and remove_id and merged_text:
                         try:
-                            # Update the kept memory with merged text
-                            client.put(
-                                f"{mem0_url.rstrip('/')}/memories/{keep_id}",
-                                json={"data": merged_text},
-                            )
-                            # Delete the duplicate
-                            client.delete(f"{mem0_url.rstrip('/')}/memories/{remove_id}")
+                            mem0_update(keep_id, merged_text)
+                            mem0_delete(remove_id)
                             stats["facts_merged"] += 1
                         except Exception as e:
                             logger.warning(f"[gardener] Merge failed: {e}")

@@ -334,20 +334,12 @@ def _do_full_processing(
     if not chunks_with_pages:
         raise ValueError(f"No chunks generated for {filename}")
 
-    # 2. Embed via Mem0 — parallel
-    from src.core.http_client import get_http_client
-    mem0_url = os.getenv("MEM0_URL", "http://mem0:8000")
-    embed_url = f"{mem0_url.rstrip('/')}/embed"
-    http_client = get_http_client(timeout=30.0)
-
-    def _embed_chunk(chunk_text: str) -> list[float]:
-        resp = http_client.post(embed_url, json={"text": chunk_text})
-        resp.raise_for_status()
-        return resp.json()["vector"]
+    # 2. Embed locally (sentence-transformers)
+    from src.worker.chat_tasks import embed_query
 
     chunk_texts = [ct for ct, _ in chunks_with_pages]
     with ThreadPoolExecutor(max_workers=min(len(chunk_texts), 8)) as pool:
-        vectors = list(pool.map(_embed_chunk, chunk_texts))
+        vectors = list(pool.map(embed_query, chunk_texts))
 
     # 3. Build payloads
     payloads: list[dict[str, Any]] = []
@@ -493,19 +485,11 @@ def transcribe_audio(
         chunks_with_pages = _smart_chunk(transcript, chunk_size=512, overlap=50)
         logger.info(f"[stt] {len(transcript)} chars → {len(chunks_with_pages)} chunks")
 
-        from src.core.http_client import get_http_client
-        mem0_url = os.getenv("MEM0_URL", "http://mem0:8000")
-        embed_url = f"{mem0_url.rstrip('/')}/embed"
-        http_client = get_http_client(timeout=30.0)
-
-        def _embed_chunk(chunk_text: str) -> list[float]:
-            resp = http_client.post(embed_url, json={"text": chunk_text})
-            resp.raise_for_status()
-            return resp.json()["vector"]
+        from src.worker.chat_tasks import embed_query
 
         chunk_texts = [ct for ct, _ in chunks_with_pages]
         with ThreadPoolExecutor(max_workers=min(len(chunk_texts), 8)) as pool:
-            vectors = list(pool.map(_embed_chunk, chunk_texts))
+            vectors = list(pool.map(embed_query, chunk_texts))
 
         payloads = []
         vector_ids = []

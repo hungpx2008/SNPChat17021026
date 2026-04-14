@@ -1,3 +1,10 @@
+/**
+ * Memory client — proxies Mem0 search/add through the backend API.
+ *
+ * Previously called the standalone Mem0 service directly over HTTP.
+ * Now routes through the backend which uses mem0 SDK locally.
+ */
+
 type MemorySearchResult = {
   id?: string;
   text?: string;
@@ -12,10 +19,10 @@ type MemoryClient = {
   add: (payload: { user_id?: string; text: string; metadata?: Record<string, unknown> }) => Promise<unknown>;
 };
 
-const DEFAULT_MEM0_URL = process.env.MEM0_URL || "http://localhost:8888";
+const BACKEND_URL = process.env.BACKEND_INTERNAL_URL || process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 
-async function httpPost<T>(path: string, body: unknown): Promise<T> {
-  const url = `${DEFAULT_MEM0_URL}${path.startsWith("/") ? path : `/${path}`}`;
+async function backendPost<T>(path: string, body: unknown): Promise<T> {
+  const url = `${BACKEND_URL}${path.startsWith("/") ? path : `/${path}`}`;
   const resp = await fetch(url, {
     method: "POST",
     headers: {
@@ -25,7 +32,7 @@ async function httpPost<T>(path: string, body: unknown): Promise<T> {
   });
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(`Mem0 service error ${resp.status}: ${text}`);
+    throw new Error(`Backend memory API error ${resp.status}: ${text}`);
   }
   return (await resp.json()) as T;
 }
@@ -33,11 +40,14 @@ async function httpPost<T>(path: string, body: unknown): Promise<T> {
 const memoryClient: MemoryClient = {
   async search(query, options) {
     try {
-      const result = await httpPost<{ results?: MemorySearchResult[] } | MemorySearchResult[]>("/search", {
-        query,
-        user_id: options?.user_id,
-        limit: options?.limit ?? 5,
-      });
+      const result = await backendPost<{ results?: MemorySearchResult[] } | MemorySearchResult[]>(
+        "/memories/search",
+        {
+          query,
+          user_id: options?.user_id,
+          limit: options?.limit ?? 5,
+        },
+      );
       const rawList = Array.isArray(result) ? result : result?.results ?? [];
       return rawList.map((item) => ({
         ...item,
@@ -50,7 +60,7 @@ const memoryClient: MemoryClient = {
   },
   async add(payload) {
     try {
-      await httpPost("/memories", {
+      await backendPost("/memories/add", {
         user_id: payload.user_id,
         metadata: payload.metadata,
         messages: [

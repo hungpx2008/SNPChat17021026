@@ -43,9 +43,7 @@ dependencies = [
     "pdf2image>=1.16",
     # Agentic Frameworks
     "pydantic-ai[openai]>=0.0.14",
-    "llama-index>=0.11.0",
-    "llama-index-vector-stores-qdrant",
-    "llama-index-embeddings-huggingface",
+    "sentence-transformers>=2.2.0",
     "tavily-python>=0.3.5",
     # Full-text search (BM25)
     "whoosh>=2.7.4",

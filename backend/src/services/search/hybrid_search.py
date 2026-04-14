@@ -19,7 +19,6 @@ Constants (from S2B):
 from __future__ import annotations
 
 import logging
-import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
@@ -260,52 +259,39 @@ class HybridSearchService:
         department: str | None,
         score_threshold: float,
     ) -> list[dict[str, Any]]:
-        """Run Qdrant semantic search (LlamaIndex retriever)."""
+        """Run Qdrant semantic search using direct client (no LlamaIndex)."""
         try:
-            from llama_index.core import Settings, StorageContext, VectorStoreIndex
-            from llama_index.vector_stores.qdrant import QdrantVectorStore
-            from qdrant_client import QdrantClient
+            from src.core.qdrant_setup import get_qdrant_client
+            from src.worker.chat_tasks import _build_qdrant_filter, embed_query
 
-            # Reuse existing embedding model setup
-            from src.worker.chat_tasks import _build_qdrant_filter, _get_hf_embed_model
+            query_vector = embed_query(query)
+            qdrant = get_qdrant_client()
+            qdrant_filter = _build_qdrant_filter(user_id, department)
 
-            Settings.embed_model = _get_hf_embed_model()
-            Settings.llm = None
+            points = qdrant.query_points(
+                collection_name="port_knowledge",
+                query=query_vector,
+                query_filter=qdrant_filter,
+                limit=self._semantic_top_k,
+            ).points
 
-            qdrant = QdrantClient(url=os.getenv("QDRANT_URL", "http://qdrant:6333"))
-            vector_store = QdrantVectorStore(
-                client=qdrant, collection_name="port_knowledge"
-            )
-            storage_ctx = StorageContext.from_defaults(vector_store=vector_store)
-            index = VectorStoreIndex.from_vector_store(
-                vector_store=vector_store, storage_context=storage_ctx
-            )
-
-            retriever = index.as_retriever(
-                similarity_top_k=self._semantic_top_k,
-                vector_store_kwargs={
-                    "filter": _build_qdrant_filter(user_id, department)
-                },
-            )
-
-            nodes = list(retriever.retrieve(query))
             results = []
-            for rank, node in enumerate(nodes):
-                score = getattr(node, "score", 0.0) or 0.0
+            for rank, point in enumerate(points):
+                score = getattr(point, "score", 0.0) or 0.0
                 if score < score_threshold:
                     continue
 
-                metadata = getattr(node.node, "metadata", {}) or {}
-                text = node.node.get_content() if hasattr(node.node, "get_content") else ""
+                payload = point.payload or {}
+                content = payload.get("content", "")
 
                 results.append({
-                    "doc_id": node.node.node_id or "",
-                    "title": metadata.get("source_file", ""),
-                    "content": text,
-                    "tags": ",".join(metadata.get("headings", [])),
+                    "doc_id": str(point.id) if point.id else "",
+                    "title": payload.get("source_file", ""),
+                    "content": content,
+                    "tags": ",".join(payload.get("headings", [])),
                     "score": score,
                     "rank": rank,
-                    "metadata": metadata,
+                    "metadata": payload,
                 })
 
             return results

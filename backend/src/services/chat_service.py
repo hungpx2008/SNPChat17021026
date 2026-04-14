@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
 from src.core.db import SessionLocal, init_engine
-from src.core.mem0_config import embed_text, get_client
 from src.core.qdrant_setup import search_vectors, upsert_vectors
 from src.core.redis_client import get_redis
 from src.repositories.messages import MessageRepository
@@ -201,7 +200,8 @@ class ChatService:
                 summarize_session_history.delay(session_id=str(session_id))
 
     async def semantic_search(self, query: SearchQuery):
-        query_vector = await embed_text(query.query)
+        from src.worker.chat_tasks import embed_query
+        query_vector = embed_query(query.query)
         filters: dict[str, Any] = {}
         if query.user_id:
             filters["user_id"] = query.user_id
@@ -221,18 +221,15 @@ class ChatService:
             if not query.user_id:
                 return []
             try:
-                client = get_client()
-                resp = await client.post(
-                    f"{self.settings.mem0_url.rstrip('/')}/search",
-                    json={
-                        "query": query.query,
-                        "user_id": query.user_id,
-                        "limit": query.limit
-                    }
+                from src.core.mem0_local import search_memories
+                data = search_memories(
+                    query=query.query,
+                    user_id=query.user_id,
+                    limit=query.limit,
                 )
-                if resp.status_code == 200:
-                    data = resp.json()
+                if isinstance(data, dict):
                     return data.get("results", [])
+                return data if isinstance(data, list) else []
             except Exception as e:
                 logger.warning(f"Mem0 search failed: {e}")
             return []
