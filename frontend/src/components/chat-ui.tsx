@@ -55,7 +55,7 @@ export function ChatUI({ department }: { department: string }) {
   const [input, setInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [agentMode, setAgentMode] = useState<AgentMode>("chat");
+  const [agentMode, setAgentMode] = useState<AgentMode>("auto");
   const [useInternalData, setUseInternalData] = useState(true);
   const [usePersonalData, setUsePersonalData] = useState(true);
   const [waitingForTask, setWaitingForTask] = useState(false);
@@ -337,7 +337,7 @@ export function ChatUI({ department }: { department: string }) {
               <span>{t("thinkingMessage")}</span>
             </div>
           ) : (
-            <ProcessingStatus mode={agentMode as "sql" | "rag"} />
+            <ProcessingStatus mode={agentMode as "auto" | "sql" | "rag"} />
           ),
       };
 

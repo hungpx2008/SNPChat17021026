@@ -9,7 +9,7 @@ class MessageCreate(BaseModel):
     role: str
     content: str
     metadata: dict[str, Any] | None = None
-    mode: Literal["chat", "sql", "rag"] = "chat"
+    mode: Literal["auto", "chat", "sql", "rag"] = "auto"
 
 
 class MessageChunkSchema(BaseModel):

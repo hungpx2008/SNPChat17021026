@@ -4,13 +4,14 @@ import type { ChangeEvent, RefObject, FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { AttachmentPreview } from "./attachment-preview";
-import { Paperclip, X, Send, LoaderCircle, Bot, BarChart3, FileText } from "lucide-react";
+import { Paperclip, X, Send, LoaderCircle, Sparkles, Bot, BarChart3, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AttachedFile } from "./types";
 
-export type AgentMode = "chat" | "sql" | "rag";
+export type AgentMode = "auto" | "chat" | "sql" | "rag";
 
 const MODE_OPTIONS: { value: AgentMode; label: string; icon: typeof Bot; description: string }[] = [
+  { value: "auto", label: "Tự động", icon: Sparkles, description: "Tự động nhận diện ý định" },
   { value: "chat", label: "Trợ lý", icon: Bot, description: "Hỏi đáp tổng quát" },
   { value: "sql", label: "Số liệu", icon: BarChart3, description: "Truy vấn dữ liệu Cảng" },
   { value: "rag", label: "Tài liệu", icon: FileText, description: "Hỏi nội dung PDF/file" },

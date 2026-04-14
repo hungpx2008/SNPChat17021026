@@ -898,15 +898,63 @@ def rag_document_search(
         if enhanced.hyde_output:
             logger.info(f"[RAG] HyDE output: {enhanced.hyde_output[:100]}...")
 
-        # ── Hybrid Search: feed enhanced queries ──
-        hybrid = HybridSearchService()
-        hybrid_results = hybrid.search(
-            query=enhanced.queries if len(enhanced.queries) > 1 else enhanced.queries[0],
-            user_id=user_id,
-            department=department,
-            limit=5,
-            score_threshold=RAG_SCORE_THRESHOLD,
-        )
+        # ── Semantic Cache: check for cached search results ──
+        cache_hit = False
+        hybrid_results = []
+        try:
+            import asyncio
+            from src.services.search.semantic_cache import SemanticCache
+            _cache = SemanticCache()
+            _loop = asyncio.new_event_loop()
+            cached = _loop.run_until_complete(_cache.get(question, user_id))
+            _loop.close()
+            if cached is not None:
+                from src.services.search.hybrid_search import SearchResult
+                hybrid_results = [
+                    SearchResult(**item) for item in cached
+                ]
+                cache_hit = True
+                logger.info(
+                    f"[RAG] Semantic cache HIT: {len(hybrid_results)} results"
+                )
+        except Exception as e:
+            logger.warning(f"[RAG] Semantic cache lookup failed: {e}")
+
+        # ── Hybrid Search: only if cache missed ──
+        if not cache_hit:
+            hybrid = HybridSearchService()
+            hybrid_results = hybrid.search(
+                query=enhanced.queries if len(enhanced.queries) > 1 else enhanced.queries[0],
+                user_id=user_id,
+                department=department,
+                limit=5,
+                score_threshold=RAG_SCORE_THRESHOLD,
+            )
+
+            # Store results in cache for next time
+            if hybrid_results:
+                try:
+                    import asyncio
+                    from src.services.search.semantic_cache import SemanticCache
+                    _cache = SemanticCache()
+                    serialized = [
+                        {
+                            "doc_id": r.doc_id, "title": r.title,
+                            "content": r.content, "tags": r.tags,
+                            "score": r.score, "semantic_score": r.semantic_score,
+                            "lexical_score": r.lexical_score,
+                            "rrf_score": r.rrf_score, "boost_score": r.boost_score,
+                            "source": r.source, "metadata": r.metadata,
+                            "parent_id": r.parent_id,
+                        }
+                        for r in hybrid_results
+                    ]
+                    _loop = asyncio.new_event_loop()
+                    _loop.run_until_complete(_cache.put(question, serialized, user_id))
+                    _loop.close()
+                    logger.info(f"[RAG] Cached {len(serialized)} results for future queries")
+                except Exception as e:
+                    logger.warning(f"[RAG] Semantic cache store failed: {e}")
 
         # ── Fallback: if hybrid returns nothing, try pure semantic ──
         if not hybrid_results:

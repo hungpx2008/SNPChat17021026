@@ -99,8 +99,19 @@ class ChatService:
             cache_payload = [self.serialize_message(msg) for msg in all_messages]
             await self.redis.set(cache_key, json.dumps(cache_payload), ex=3600)
 
-        # ── Dispatch task based on explicit mode (user must choose) ──
-        mode = getattr(message, 'mode', 'chat')
+        # ── Resolve mode: auto-route or explicit ──
+        mode = getattr(message, 'mode', 'auto')
+
+        if mode == "auto":
+            from src.services.intent_router import IntentRouter
+            router = IntentRouter()
+            intent_result = router.classify(message.content)
+            mode = intent_result.intent.value
+            logger.info(
+                f"[AutoRoute] '{message.content[:50]}...' → {mode} "
+                f"(confidence={intent_result.confidence:.2f}, "
+                f"signals={intent_result.signals})"
+            )
 
         if mode == "sql":
             from src.worker.tasks import run_sql_query
