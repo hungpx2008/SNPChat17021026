@@ -9,7 +9,8 @@ class MessageCreate(BaseModel):
     role: str
     content: str
     metadata: dict[str, Any] | None = None
-    mode: Literal["auto", "chat", "sql", "rag"] = "auto"
+    mode: Literal["chat", "sql", "rag"] = "chat"
+    parent_message_id: UUID | None = None
 
 
 class MessageChunkSchema(BaseModel):
@@ -27,11 +28,11 @@ class MessageSchema(BaseModel):
     role: str
     content: str
     metadata: dict[str, Any] | None = None
-    created_at: datetime
-    chunks: list[MessageChunkSchema] = Field(default_factory=list)
     parent_message_id: UUID | None = None
     branch_index: int = 0
     is_active_branch: bool = True
+    created_at: datetime
+    chunks: list[MessageChunkSchema] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -56,6 +57,21 @@ class SessionSchema(BaseModel):
 
 class SessionWithMessages(SessionSchema):
     messages: list[MessageSchema] = Field(default_factory=list)
+
+
+class EditMessageRequest(BaseModel):
+    content: str
+
+
+class NavigateBranchRequest(BaseModel):
+    direction: Literal[-1, 1]
+
+
+class BranchInfoSchema(BaseModel):
+    current_index: int
+    total_branches: int
+    sibling_ids: list[UUID] = Field(default_factory=list)
+    fork_point_id: UUID | None = None
 
 
 class SearchQuery(BaseModel):
@@ -126,57 +142,3 @@ class DocumentUploadResponse(BaseModel):
     filename: str
     status: str
     message: str
-
-
-# ---- Conversation Branching Schemas ----
-
-class EditMessageRequest(BaseModel):
-    content: str = Field(..., min_length=1, max_length=10000)
-
-
-class RegenerateRequest(BaseModel):
-    """Empty body — just triggers regeneration."""
-    pass
-
-
-class NavigateBranchRequest(BaseModel):
-    direction: Literal[-1, 1]
-
-
-class BranchInfoSchema(BaseModel):
-    current_index: int  # 1-based
-    total_branches: int
-    sibling_ids: list[str]
-    fork_point_id: str | None = None
-
-
-class TreeNodeSchema(BaseModel):
-    id: str
-    role: str
-    content: str  # truncated to 100 chars
-    parent_id: str | None = None
-    branch_index: int = 0
-    is_active: bool = True
-    created_at: str
-    children: list["TreeNodeSchema"] = Field(default_factory=list)
-
-
-class ConversationTreeSchema(BaseModel):
-    session_id: str
-    roots: list[TreeNodeSchema] = Field(default_factory=list)
-
-
-class BranchMessageSchema(BaseModel):
-    """Message schema with branching fields for branch API responses."""
-    id: str
-    session_id: str
-    role: str
-    content: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: str
-    parent_message_id: str | None = None
-    branch_index: int = 0
-    is_active_branch: bool = True
-
-
-TreeNodeSchema.model_rebuild()

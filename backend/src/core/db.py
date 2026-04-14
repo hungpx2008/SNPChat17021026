@@ -64,7 +64,6 @@ async def create_tables() -> None:
         await conn.run_sync(Base.metadata.create_all)
         if conn.dialect.name == "postgresql":
             await _ensure_metadata_columns(conn)
-            await _ensure_branching_columns(conn)
         else:
             logger.info("Skipping metadata column backfill for dialect: %s", conn.dialect.name)
 
@@ -85,41 +84,21 @@ async def _ensure_metadata_columns(conn: AsyncConnection) -> None:
             text(f"UPDATE {table} SET metadata = '{{}}'::jsonb "
                  f"WHERE metadata IS NULL")
         )
-
-
-async def _ensure_branching_columns(conn: AsyncConnection) -> None:
-    """Add conversation branching columns to chat_messages for edit/regenerate support."""
-    # Add columns
-    await conn.execute(text(
-        "ALTER TABLE IF EXISTS chat_messages "
-        "ADD COLUMN IF NOT EXISTS parent_message_id UUID "
-        "REFERENCES chat_messages(id) ON DELETE SET NULL"
-    ))
-    await conn.execute(text(
-        "ALTER TABLE IF EXISTS chat_messages "
-        "ADD COLUMN IF NOT EXISTS branch_index INTEGER NOT NULL DEFAULT 0"
-    ))
-    await conn.execute(text(
-        "ALTER TABLE IF EXISTS chat_messages "
-        "ADD COLUMN IF NOT EXISTS is_active_branch BOOLEAN NOT NULL DEFAULT TRUE"
-    ))
-
-    # Create index
-    await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_chat_messages_parent "
-        "ON chat_messages (parent_message_id)"
-    ))
-
-    # Backfill parent_message_id for existing rows using LAG window function
-    await conn.execute(text("""
-        UPDATE chat_messages AS cm
-        SET parent_message_id = sub.prev_id
-        FROM (
-            SELECT id,
-                   LAG(id) OVER (PARTITION BY session_id ORDER BY created_at) AS prev_id
-            FROM chat_messages
-        ) AS sub
-        WHERE cm.id = sub.id
-          AND cm.parent_message_id IS NULL
-          AND sub.prev_id IS NOT NULL
-    """))
+    await conn.execute(
+        text(
+            "ALTER TABLE IF EXISTS chat_messages "
+            "ADD COLUMN IF NOT EXISTS parent_message_id UUID NULL"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE IF EXISTS chat_messages "
+            "ADD COLUMN IF NOT EXISTS branch_index INTEGER NOT NULL DEFAULT 0"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE IF EXISTS chat_messages "
+            "ADD COLUMN IF NOT EXISTS is_active_branch BOOLEAN NOT NULL DEFAULT TRUE"
+        )
+    )

@@ -37,23 +37,27 @@
 
 ### Phase 6: Parent-Child Chunking
 - **Goal:** Replace flat single-tier chunking with 2-tier parent-child model. Child chunks (small, ~384 tokens) for vector search precision. Parent chunks (large, ~2048 tokens) fed to LLM for complete context.
-- **Status:** Not Started
-- **New files:** `backend/src/services/chunking/parent_child_chunker.py`
-- **Modified:** `backend/src/models/models.py`, `backend/src/services/docling_service.py`, `backend/src/worker/media_tasks.py`, `backend/src/worker/chat_tasks.py`, `backend/src/services/search/hybrid_search.py`, `backend/src/worker/helpers.py`
+- **Status:** Complete (discovered already implemented — config defaults aligned 2026-04-14)
+- **Implemented files:** `backend/src/services/chunk_splitter.py`, `backend/src/services/parent_chunk_store.py`, `backend/src/models/models.py` (ChunkParent), `backend/src/worker/media_tasks.py`, `backend/src/worker/chat_tasks.py` (_resolve_parent_content), `backend/src/services/search/hybrid_search.py` (SearchResult.parent_id)
+- **Tests:** `backend/tests/test_chunk_splitter.py`, `backend/tests/test_parent_chunk_store.py`, `backend/tests/test_parent_child_integration.py`
 - **Depends on:** Phase 4 (Hybrid Search)
 - **Spec:** `docs/superpowers/specs/2026-04-13-eon-gap-techniques-design.md`
 
 ### Phase 7: HyDE + Query Decomposition
 - **Goal:** Enhance RAG queries with Hypothetical Document Embedding and complex query splitting
-- **Status:** Not Started
+- **Status:** Complete (discovered already implemented — verified 2026-04-14)
+- **Implemented files:** `backend/src/services/search/query_enhancer.py` (QueryEnhancer, EnhancedQuery, QueryStrategy), `backend/src/worker/chat_tasks.py` (integration), `backend/src/services/search/hybrid_search.py` (multi-query search)
+- **Tests:** `backend/tests/test_query_enhancer.py`
 - **Depends on:** Phase 6 (Parent-Child Chunking)
 
 ### Phase 8: Auto-routing + Semantic Cache
 - **Goal:** Auto-detect query intent (chat/sql/rag) and cache frequent Q&A pairs semantically
-- **Status:** Not Started
+- **Status:** Complete (discovered already implemented — verified 2026-04-14)
+- **Implemented files:** `backend/src/services/intent_router.py` (IntentRouter), `backend/src/services/search/semantic_cache.py` (SemanticCache), `backend/src/services/chat_service.py` (integration), `backend/src/worker/chat_tasks.py` (cache integration)
 - **Depends on:** Phase 7
 
 ### Phase 9: PaddleOCR Integration
 - **Goal:** Extract text from scanned PDFs and images using PaddleOCR
-- **Status:** Not Started — Nice-to-have
+- **Status:** Complete (discovered already implemented — verified 2026-04-14, gated behind ENABLE_PADDLE_OCR=true)
+- **Implemented files:** `backend/src/services/ocr_service.py` (OCRService), `backend/src/worker/media_tasks.py` (integration)
 - **Depends on:** Independent

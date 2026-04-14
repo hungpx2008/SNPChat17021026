@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any, Iterable
 from uuid import UUID, uuid4
 
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import get_settings
 from src.core.db import SessionLocal, init_engine
+from src.core.mem0_config import embed_text, get_client
 from src.core.qdrant_setup import search_vectors, upsert_vectors
 from src.core.redis_client import get_redis
 from src.repositories.messages import MessageRepository
@@ -17,9 +19,18 @@ from src.repositories.sessions import SessionRepository
 from src.schemas.schemas import MessageCreate, SearchQuery
 
 
+import httpx
 from src.worker.tasks import process_chat_response, store_memory
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class BranchInfo:
+    current_index: int
+    total_branches: int
+    sibling_ids: list[UUID]
+    fork_point_id: UUID | None
 
 
 class ChatService:
@@ -54,12 +65,10 @@ class ChatService:
             if cached:
                 return json.loads(cached)
 
-        if limit is None:
-            # Use active-branch walk for full conversation view
-            messages = await self.message_repo.list_active_branch_messages(session_id)
-        else:
-            messages = await self.message_repo.list_messages(session_id, limit=limit)
+        messages = await self._get_active_branch_messages(session_id)
         payload = [self.serialize_message(message) for message in messages]
+        if limit is not None:
+            payload = payload[-limit:]
         if limit is None:
             await self.redis.set(cache_key, json.dumps(payload), ex=3600)
         return payload
@@ -72,45 +81,27 @@ class ChatService:
         user_id: str | None,
         department: str | None,
     ):
-        # Determine parent for branching support
-        last_active = await self.message_repo.get_last_active_message(session_id)
-        parent_message_id = last_active.id if last_active else None
+        parent_message_id = message.parent_message_id
+        if parent_message_id is None:
+            latest_active = await self.message_repo.get_latest_active_message(session_id)
+            parent_message_id = latest_active.id if latest_active else None
 
+        branch_index = await self.message_repo.count_siblings(session_id, parent_message_id)
         db_message = await self.message_repo.create_message(
             session_id=session_id,
             role=message.role,
             content=message.content,
             metadata=message.metadata or {},
             parent_message_id=parent_message_id,
+            branch_index=branch_index,
+            is_active_branch=True,
         )
         await self.session.flush()
+        await self._invalidate_cache(session_id)
+        all_messages = await self._get_active_branch_messages(session_id)
 
-        # Update cache: append new message instead of full DB reload
-        cache_key = self._cache_key(session_id)
-        cached_raw = await self.redis.get(cache_key)
-        if cached_raw:
-            existing = json.loads(cached_raw)
-            existing.append(self.serialize_message(db_message))
-            await self.redis.set(cache_key, json.dumps(existing), ex=3600)
-            all_messages = existing  # reuse for msg_count below
-        else:
-            all_messages = await self.message_repo.list_messages(session_id)
-            cache_payload = [self.serialize_message(msg) for msg in all_messages]
-            await self.redis.set(cache_key, json.dumps(cache_payload), ex=3600)
-
-        # ── Resolve mode: auto-route or explicit ──
-        mode = getattr(message, 'mode', 'auto')
-
-        if mode == "auto":
-            from src.services.intent_router import IntentRouter
-            router = IntentRouter()
-            intent_result = router.classify(message.content)
-            mode = intent_result.intent.value
-            logger.info(
-                f"[AutoRoute] '{message.content[:50]}...' → {mode} "
-                f"(confidence={intent_result.confidence:.2f}, "
-                f"signals={intent_result.signals})"
-            )
+        # ── Dispatch task based on explicit mode (user must choose) ──
+        mode = getattr(message, 'mode', 'chat')
 
         if mode == "sql":
             from src.worker.tasks import run_sql_query
@@ -147,61 +138,115 @@ class ChatService:
                 department=department,
             )
 
-        # Trigger smart summarization based on token usage (replaces hardcoded % 10)
-        self._maybe_trigger_summarization(session_id, all_messages)
+        # Trigger async summary every 10 messages (runs in background)
+        msg_count = len(all_messages)
+        if msg_count > 0 and msg_count % 10 == 0:
+            from src.worker.tasks import summarize_session_history
+            summarize_session_history.delay(session_id=str(session_id))
 
         # Return message + mode so API can signal frontend
         db_message._intent_type = mode
         return db_message
 
+    async def edit_message(self, message_id: UUID, new_content: str):
+        original_message = await self._require_message(message_id)
+        sibling_count = await self.message_repo.count_siblings(
+            original_message.session_id,
+            original_message.parent_message_id,
+        )
+        original_message.is_active_branch = False
+        edited_message = await self.message_repo.create_message(
+            session_id=original_message.session_id,
+            role=original_message.role,
+            content=new_content,
+            metadata=original_message.meta or {},
+            parent_message_id=original_message.parent_message_id,
+            branch_index=sibling_count,
+            is_active_branch=True,
+        )
+        await self._invalidate_cache(original_message.session_id)
+        return edited_message
+
+    async def regenerate(self, user_message_id: UUID):
+        user_message = await self._require_message(user_message_id)
+        sibling_count = await self.message_repo.count_siblings(
+            user_message.session_id,
+            user_message.id,
+        )
+        siblings = await self.message_repo.list_siblings(user_message.session_id, user_message.id)
+        for sibling in siblings:
+            sibling.is_active_branch = False
+
+        regenerated_message = await self.message_repo.create_message(
+            session_id=user_message.session_id,
+            role="assistant",
+            content="",
+            metadata={"regenerated_from": str(user_message_id), "status": "pending"},
+            parent_message_id=user_message.id,
+            branch_index=sibling_count,
+            is_active_branch=True,
+        )
+        await self._invalidate_cache(user_message.session_id)
+        return regenerated_message
+
+    async def get_branch_info(self, message_id: UUID) -> BranchInfo:
+        message = await self._require_message(message_id)
+        siblings = await self.message_repo.list_siblings(message.session_id, message.parent_message_id)
+        current_index = 1
+        for index, sibling in enumerate(siblings, start=1):
+            if sibling.id == message.id:
+                current_index = index
+                break
+        return BranchInfo(
+            current_index=current_index,
+            total_branches=len(siblings),
+            sibling_ids=[sibling.id for sibling in siblings],
+            fork_point_id=message.parent_message_id,
+        )
+
+    async def navigate_branch(self, message_id: UUID, direction: int):
+        message = await self._require_message(message_id)
+        siblings = await self.message_repo.list_siblings(message.session_id, message.parent_message_id)
+        if len(siblings) <= 1:
+            return await self._get_active_branch_messages(message.session_id)
+
+        current_index = next(
+            (index for index, sibling in enumerate(siblings) if sibling.id == message.id),
+            0,
+        )
+        target_index = (current_index + direction) % len(siblings)
+        for sibling in siblings:
+            sibling.is_active_branch = False
+        siblings[target_index].is_active_branch = True
+        await self._invalidate_cache(message.session_id)
+        return await self._get_active_branch_messages(message.session_id)
+
+    async def get_conversation_tree(self, session_id: UUID) -> dict[str, Any]:
+        messages = await self.message_repo.list_session_messages(session_id)
+        children_map = self._build_children_map(messages)
+
+        def serialize_node(message) -> dict[str, Any]:
+            return {
+                "id": str(message.id),
+                "role": message.role,
+                "content": message.content,
+                "parent_message_id": str(message.parent_message_id) if message.parent_message_id else None,
+                "branch_index": message.branch_index,
+                "is_active_branch": message.is_active_branch,
+                "children": [
+                    serialize_node(child) for child in children_map.get(message.id, [])
+                ],
+            }
+
+        roots = [serialize_node(message) for message in children_map.get(None, [])]
+        return {"session_id": str(session_id), "roots": roots}
+
     # NOTE: _process_message_background and _chunk_and_store have been
     # migrated to Celery worker tasks (process_chat_response in tasks.py).
     # They are no longer needed here.
 
-    @staticmethod
-    def _to_msg_dicts(all_messages: Iterable) -> list[dict]:
-        """Normalize mixed message types (dict or ORM objects) to dicts."""
-        result = []
-        for m in all_messages:
-            if isinstance(m, dict):
-                result.append({
-                    "role": m.get("role", "user"),
-                    "content": m.get("content", ""),
-                })
-            else:
-                result.append({
-                    "role": getattr(m, "role", "user"),
-                    "content": getattr(m, "content", ""),
-                })
-        return result
-
-    def _maybe_trigger_summarization(self, session_id: UUID, all_messages: Iterable) -> None:
-        """Check token usage and trigger smart summarization if threshold exceeded."""
-        try:
-            from src.utils.token_estimator import estimate_conversation_tokens
-            from src.utils.summarization import get_summarization_params
-
-            msg_dicts = self._to_msg_dicts(all_messages)
-            estimated_tokens = estimate_conversation_tokens(msg_dicts)
-            llm_model = getattr(self.settings, "llm_model", "openai/gpt-4o-mini")
-            params = get_summarization_params(llm_model, estimated_tokens)
-            if params:
-                from src.worker.tasks import summarize_session_history
-                summarize_session_history.delay(
-                    session_id=str(session_id),
-                    keep_count=params["keep_count"],
-                    trim_tokens=params["trim_tokens"],
-                )
-        except Exception as e:
-            logger.warning(f"Smart summarization check failed, using fallback: {e}")
-            msg_count = sum(1 for _ in all_messages)
-            if msg_count > 0 and msg_count % 10 == 0:
-                from src.worker.tasks import summarize_session_history
-                summarize_session_history.delay(session_id=str(session_id))
-
     async def semantic_search(self, query: SearchQuery):
-        from src.worker.chat_tasks import embed_query
-        query_vector = embed_query(query.query)
+        query_vector = await embed_text(query.query)
         filters: dict[str, Any] = {}
         if query.user_id:
             filters["user_id"] = query.user_id
@@ -221,15 +266,18 @@ class ChatService:
             if not query.user_id:
                 return []
             try:
-                from src.core.mem0_local import search_memories
-                data = search_memories(
-                    query=query.query,
-                    user_id=query.user_id,
-                    limit=query.limit,
+                client = get_client()
+                resp = await client.post(
+                    f"{self.settings.mem0_url.rstrip('/')}/search",
+                    json={
+                        "query": query.query,
+                        "user_id": query.user_id,
+                        "limit": query.limit
+                    }
                 )
-                if isinstance(data, dict):
+                if resp.status_code == 200:
+                    data = resp.json()
                     return data.get("results", [])
-                return data if isinstance(data, list) else []
             except Exception as e:
                 logger.warning(f"Mem0 search failed: {e}")
             return []
@@ -261,7 +309,7 @@ class ChatService:
 
         combined = convert_qdrant(chunk_results) + convert_mem0(mem0_results)
         # Filter by minimum score threshold (unified across sources)
-        SCORE_THRESHOLD = 0.35
+        SCORE_THRESHOLD = 0.45
         combined = [item for item in combined if item["score"] >= SCORE_THRESHOLD]
         combined.sort(key=lambda item: item["score"], reverse=True)
         return combined[: query.limit]
@@ -278,15 +326,45 @@ class ChatService:
             "role": message.role,
             "content": message.content,
             "metadata": message.meta or {},
+            "parent_message_id": str(message.parent_message_id) if message.parent_message_id else None,
+            "branch_index": message.branch_index,
+            "is_active_branch": message.is_active_branch,
             "created_at": message.created_at.isoformat(),
-            "parent_message_id": (
-                str(getattr(message, "parent_message_id", None))
-                if getattr(message, "parent_message_id", None)
-                else None
-            ),
-            "branch_index": getattr(message, "branch_index", 0),
-            "is_active_branch": getattr(message, "is_active_branch", True),
         }
+
+    async def _invalidate_cache(self, session_id: UUID) -> None:
+        if hasattr(self.redis, "delete"):
+            await self.redis.delete(self._cache_key(session_id))
+
+    async def _require_message(self, message_id: UUID):
+        message = await self.message_repo.get_message(message_id)
+        if message is None:
+            raise ValueError(f"Message {message_id} not found")
+        return message
+
+    async def _get_active_branch_messages(self, session_id: UUID):
+        messages = await self.message_repo.list_session_messages(session_id)
+        children_map = self._build_children_map(messages)
+        active_path: list[Any] = []
+        for root in children_map.get(None, []):
+            if root.is_active_branch:
+                self._append_active_path(root, children_map, active_path)
+        return active_path
+
+    def _append_active_path(self, message, children_map, result: list[Any]) -> None:
+        result.append(message)
+        for child in children_map.get(message.id, []):
+            if child.is_active_branch:
+                self._append_active_path(child, children_map, result)
+                break
+
+    def _build_children_map(self, messages: list[Any]) -> dict[UUID | None, list[Any]]:
+        children_map: dict[UUID | None, list[Any]] = {}
+        for message in messages:
+            children_map.setdefault(message.parent_message_id, []).append(message)
+        for siblings in children_map.values():
+            siblings.sort(key=lambda item: (item.branch_index, item.created_at))
+        return children_map
 
 
 def chunk_text(text: str, chunk_size: int) -> list[str]:
@@ -306,6 +384,5 @@ def chunk_text(text: str, chunk_size: int) -> list[str]:
     if not chunks:
         return [text]
     return chunks
-
 
 
