@@ -34,11 +34,7 @@ _hf_embed_model_name: str | None = None
 
 
 def _get_hf_embed_model():
-    """Return a cached SentenceTransformer instance (loaded once per Celery worker).
-
-    Replaces the previous LlamaIndex HuggingFaceEmbedding wrapper.
-    Uses sentence-transformers directly for lower overhead and fewer dependencies.
-    """
+    """Return a cached SentenceTransformer instance (loaded once per Celery worker)."""
     global _hf_embed_model, _hf_embed_model_name  # noqa: PLW0603
     model_name = os.getenv("EMBEDDING_MODEL", "thanhtantran/Vietnamese_Embedding_v2")
     if _hf_embed_model is None or _hf_embed_model_name != model_name:

@@ -200,7 +200,6 @@ volumes:
   postgres-data:
   redis-data:
   qdrant-data:
-  huggingface-cache:
   media-data: # Shared giữa backend + worker_media (charts, audio, docs)
   whoosh-index: # BM25 lexical search index (Hybrid Search)
   paddle-models: # PaddleOCR model cache (Phase 9)

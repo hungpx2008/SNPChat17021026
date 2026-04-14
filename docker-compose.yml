@@ -231,7 +231,6 @@ volumes:
   postgres-data:
   redis-data:
   qdrant-data:
-  huggingface-cache:
   media-data:
   whoosh-index:
   paddle-models:

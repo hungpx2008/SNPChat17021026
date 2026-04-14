@@ -25,14 +25,13 @@ Nếu không chắc command nào → dùng `gsd:do` (nó sẽ tự route).
 
 **ChatSNP** = AI Chatbot cho Tân Cảng Sài Gòn. Code nằm trong `chatSNP170226/`.
 
-**Stack:** Next.js 15 + FastAPI + Celery + PostgreSQL + Redis + Qdrant + Mem0
+**Stack:** Next.js 15 + FastAPI + Celery + PostgreSQL + Redis + Qdrant + Mem0 (local lib)
 
 ## Cấu trúc
 
 - `chatSNP170226/backend/` — FastAPI + Celery (Python 3.10+)
 - `chatSNP170226/frontend/` — Next.js 15 App Router (TypeScript)
-- `chatSNP170226/mem0-service/` — Mem0 memory server
-- `chatSNP170226/docker-compose.yml` — Orchestration (11 services)
+- `chatSNP170226/docker-compose.yml` — Orchestration (10 services)
 
 ## Quy tắc code
 
@@ -62,7 +61,7 @@ cd chatSNP170226/backend && pytest  # Test
 
 ## Lưu ý quan trọng
 
-- 3 agent modes: `chat`, `sql` (Vanna), `rag` (LlamaIndex + Qdrant)
+- 3 agent modes: `chat`, `sql` (Vanna), `rag` (Qdrant direct + sentence-transformers)
 - Auth: chỉ localStorage (chưa JWT)
 - SSE qua Redis Pub/Sub → `/sessions/{id}/stream`
 - Vietnamese-first cho mọi thứ
