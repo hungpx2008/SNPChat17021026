@@ -9,6 +9,8 @@ import logging
 import os
 from typing import Any, Literal
 
+import httpx
+
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.openai import OpenAIModel
@@ -61,7 +63,7 @@ async def execute_sql(ctx: RunContext[dict[str, Any]], sql: str) -> str:
         if df is None or df.empty:
             return "Query returned no results."
         return df.to_string(index=False)
-    except Exception as e:
+    except Exception as e:  # Justified: Vanna run_sql may raise various internal errors
         return f"SQL Error: {str(e)}"
 
 @sql_agent.tool
@@ -74,7 +76,7 @@ async def get_db_schema(ctx: RunContext[dict[str, Any]]) -> str:
         # We can also fetch from information_schema
         # For simplicity, we return the training data summary
         return str(vn.get_training_data())
-    except Exception as e:
+    except Exception as e:  # Justified: Vanna training data access may raise various errors
         return f"Could not fetch schema: {str(e)}"
 
 
@@ -118,7 +120,7 @@ def run_sql_query(
             try:
                 initial_sql = vn.generate_sql(question=question, allow_llm_to_see_data=True)
                 logger.info(f"[vanna] Initial SQL: {initial_sql}")
-            except Exception:
+            except Exception:  # Justified: Vanna initial suggestion is optional, agent will handle
                 pass
 
             # Run the agent to verify/fix the SQL
@@ -139,8 +141,8 @@ def run_sql_query(
             sql = agent_run.output.sql
             explanation = agent_run.output.explanation
             logger.info(f"[sql_agent] Final SQL: {sql}")
-        except Exception as agent_err:
-            logger.error(f"[sql_agent] Agent failed: {agent_err}")
+        except Exception as agent_err:  # Justified: PydanticAI agent may raise various internal errors
+            logger.error("[sql_agent] Agent failed (%s): %s", type(agent_err).__name__, agent_err)
             sql = None
 
         if not sql:
@@ -164,8 +166,8 @@ def run_sql_query(
                         sql_success = True
                         markdown = df.to_markdown(index=False)
                         result_text = f"{explanation}\n\n{markdown}"
-                except Exception as sql_err:
-                    logger.error(f"Execution failed after agent refinement: {sql_err}")
+                except Exception as sql_err:  # Justified: Vanna run_sql may raise various DB errors
+                    logger.error("Execution failed after agent refinement (%s): %s", type(sql_err).__name__, sql_err)
                     result_text = "Hệ thống gặp sự cố khi xử lý dữ liệu. Em sẽ báo cáo kỹ thuật kiểm tra lại ạ."
                     df = None
 
@@ -184,8 +186,8 @@ def run_sql_query(
                     })
                     result_text += f"\n\n📊 [Xem biểu đồ]({chart_result['chart_url']})"
                     logger.info(f"[lida] Chart generated: {chart_result['chart_url']}")
-            except Exception as chart_err:
-                logger.warning(f"[lida] Chart generation failed: {chart_err}")
+            except Exception as chart_err:  # Justified: Lida chart non-critical, SQL result already saved
+                logger.warning("[lida] Chart generation failed (%s): %s", type(chart_err).__name__, chart_err)
 
         # 5. TTS voice — ONLY if SQL succeeded (domino protection: don't read error messages)
         tts_keywords = ["đọc", "nghe", "giọng", "voice", "audio", "phát"]
@@ -202,8 +204,8 @@ def run_sql_query(
                     })
                     result_text += f"\n\n🔊 [Nghe báo cáo]({tts_result['audio_url']})"
                     logger.info(f"[tts] Audio generated: {tts_result['audio_url']}")
-            except Exception as tts_err:
-                logger.warning(f"[tts] TTS failed: {tts_err}")
+            except Exception as tts_err:  # Justified: TTS non-critical, SQL result already saved
+                logger.warning("[tts] TTS failed (%s): %s", type(tts_err).__name__, tts_err)
 
         # 6. Save result via API (with attachments in metadata)
         try:
@@ -228,8 +230,8 @@ def run_sql_query(
             resp.raise_for_status()
             logger.info(f"Saved message via API: {resp.status_code}")
 
-        except Exception as e:
-            logger.error(f"Failed to save message via API: {e}")
+        except httpx.HTTPError as e:
+            logger.error("Failed to save message via API: %s", e)
             return {"status": "error", "message": str(e)}
 
         # Notify frontend via SSE that the response is ready
@@ -242,8 +244,8 @@ def run_sql_query(
             "attachments": attachments,
         }
 
-    except Exception as exc:
-        logger.exception(f"Error in SQL query: {exc}")
+    except Exception as exc:  # Justified: SQL pipeline orchestrator — must always save error response
+        logger.exception("Error in SQL query (%s): %s", type(exc).__name__, exc)
         # Save Vietnamese error message — NEVER expose SQL/Python tracebacks to user
         try:
             from src.core.http_client import get_http_client
@@ -258,8 +260,8 @@ def run_sql_query(
                     f"{BACKEND_INTERNAL_URL}/sessions/{session_id}/messages",
                     json={"content": error_content, "role": "assistant"},
                 )
-        except Exception:
-            pass
+        except httpx.HTTPError:
+            pass  # Justified: best-effort error message delivery; original error already logged
         # Still notify frontend so it stops waiting
         from .helpers import publish_task_complete
         publish_task_complete(session_id)

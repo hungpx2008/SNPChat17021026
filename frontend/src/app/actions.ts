@@ -66,8 +66,8 @@ export async function getHelp({
 
   const requestPromise = (async () => {
     try {
-      let contextResults: any[] = [];
-      let mem0Memories: any[] = [];
+      let contextResults: SearchResult[] = [];
+      let mem0Memories: Array<{ text?: string; memory?: string }> = [];
 
       // Run semantic search once + direct Mem0 memory fetch in parallel
       const [searchResult, memoryResult] = await Promise.allSettled([
@@ -113,7 +113,7 @@ export async function getHelp({
       }
 
       // Tier 2: from single semantic search above (short_term only)
-      const relevantOldChunks = (contextResults || []).filter((r: any) => r.source === 'short_term').slice(0, 3);
+      const relevantOldChunks = (contextResults || []).filter((r: SearchResult) => r.source === 'short_term').slice(0, 3);
 
       const contextBlocks: ContextBlock[] = [];
 

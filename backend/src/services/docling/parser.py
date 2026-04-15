@@ -19,7 +19,22 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def env_int(name: str, default: int, minimum: int = 1) -> int:
-    """Read an integer from the environment with a lower bound."""
+    """Read an integer from the environment with a lower bound.
+
+    Parameters
+    ----------
+    name : str
+        Environment variable name.
+    default : int
+        Value returned when the variable is missing or not a valid integer.
+    minimum : int, optional
+        Lower clamp applied to the parsed value (default ``1``).
+
+    Returns
+    -------
+    int
+        Parsed and clamped integer.
+    """
     raw = os.getenv(name, str(default)).strip()
     try:
         value = int(raw)
@@ -29,7 +44,19 @@ def env_int(name: str, default: int, minimum: int = 1) -> int:
 
 
 def env_bool(name: str, default: bool) -> bool:
-    """Read a boolean from the environment (accepts 1/true/yes/on)."""
+    """Read a boolean from the environment (accepts 1/true/yes/on).
+
+    Parameters
+    ----------
+    name : str
+        Environment variable name.
+    default : bool
+        Value returned when the variable is unset.
+
+    Returns
+    -------
+    bool
+    """
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -41,7 +68,19 @@ def env_bool(name: str, default: bool) -> bool:
 # ---------------------------------------------------------------------------
 
 def slugify_key(text: str) -> str:
-    """Turn arbitrary text into a lowercase slug suitable for metadata keys."""
+    """Turn arbitrary text into a lowercase slug suitable for metadata keys.
+
+    Parameters
+    ----------
+    text : str
+        Raw text to slugify.
+
+    Returns
+    -------
+    str
+        Lowercased, underscore-separated slug.  Returns ``"unknown"`` for
+        empty input.
+    """
     clean = re.sub(r"\s+", " ", (text or "").strip().lower())
     clean = re.sub(r"[^\w\- ]+", "", clean)
     clean = clean.replace(" ", "_")
@@ -52,6 +91,18 @@ def normalize_money_and_unit(value: str) -> str:
     """Normalize fee/currency/unit expressions to stable tokens.
 
     Works across documents and does not assume one domain.
+
+    Parameters
+    ----------
+    value : str
+        Raw cell text that may contain amounts, currencies, or per-unit
+        suffixes (e.g. ``"50.000 VNĐ/cont"``).
+
+    Returns
+    -------
+    str
+        Normalised token such as ``"50000 VND/container"``, or ``""``
+        when no currency or unit is detected.
     """
     text = re.sub(r"\s+", " ", (value or "").strip())
     if not text:
@@ -112,7 +163,19 @@ def normalize_money_and_unit(value: str) -> str:
 
 
 def normalize_group_hints(raw: str | None) -> list[str]:
-    """Parse comma-separated group-key hint names from a raw config string."""
+    """Parse comma-separated group-key hint names from a raw config string.
+
+    Parameters
+    ----------
+    raw : str or None
+        Comma-separated hint names.  When ``None``, a sensible Vietnamese/
+        English default list is used.
+
+    Returns
+    -------
+    list[str]
+        Lowercased, stripped hint tokens.
+    """
     base = (
         raw
         if raw is not None
@@ -122,7 +185,19 @@ def normalize_group_hints(raw: str | None) -> list[str]:
 
 
 def looks_like_identifier(text: str) -> bool:
-    """Heuristic: does *text* look like an alphanumeric identifier?"""
+    """Heuristic: does *text* look like an alphanumeric identifier?
+
+    Parameters
+    ----------
+    text : str
+        Candidate cell value.
+
+    Returns
+    -------
+    bool
+        ``True`` when the text contains at least one letter and the
+        alphanumeric ratio exceeds 55 %.
+    """
     val = (text or "").strip()
     if not val:
         return False
@@ -132,7 +207,18 @@ def looks_like_identifier(text: str) -> bool:
 
 
 def extract_row_keys(text: str) -> list[str]:
-    """Extract deduplicated ``row_key=…`` values from chunk text."""
+    """Extract deduplicated ``row_key=…`` values from chunk text.
+
+    Parameters
+    ----------
+    text : str
+        Chunk text potentially containing ``[tbl_cell … row_key=…]`` markers.
+
+    Returns
+    -------
+    list[str]
+        Unique row key values in order of first occurrence.
+    """
     keys = re.findall(r"row_key=([^\]\s]+)", text or "")
     deduped: list[str] = []
     seen: set[str] = set()
@@ -148,7 +234,18 @@ def extract_row_keys(text: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def table_page_no(item: Any) -> int:
-    """Return the page number for a Docling table/picture item."""
+    """Return the page number for a Docling table/picture item.
+
+    Parameters
+    ----------
+    item : Any
+        A Docling document item with an optional ``prov`` attribute.
+
+    Returns
+    -------
+    int
+        Zero-based page number, or ``0`` when provenance is unavailable.
+    """
     if hasattr(item, "prov") and item.prov:
         prov = item.prov[0] if isinstance(item.prov, list) else item.prov
         page_raw = getattr(prov, "page_no", 0) or getattr(prov, "page", 0)
@@ -202,7 +299,20 @@ def should_call_vlm(
 
 
 def resolve_group_col_index(cols: list[str], hints: list[str]) -> int:
-    """Return the column index whose header matches one of the *hints*."""
+    """Return the column index whose header matches one of the *hints*.
+
+    Parameters
+    ----------
+    cols : list[str]
+        Column header strings from the table.
+    hints : list[str]
+        Lowercased keyword fragments to match against headers.
+
+    Returns
+    -------
+    int
+        Index of the first matching column, or ``0`` when no hint matches.
+    """
     lowered = [c.lower() for c in cols]
     for idx, col_name in enumerate(lowered):
         if any(hint in col_name for hint in hints):
@@ -217,6 +327,20 @@ def pick_group_key_col(
 
     Tries hint-based matching first, then falls back to the first
     identifier-like column.
+
+    Parameters
+    ----------
+    cols : list[str]
+        Column header strings.
+    table_df : Any
+        A pandas-like ``DataFrame`` with ``.iloc`` and ``.shape``.
+    hints : list[str]
+        Lowercased keyword fragments to match against headers.
+
+    Returns
+    -------
+    int
+        Column index to use as the group key.
     """
     hinted_idx = resolve_group_col_index(cols, hints)
     if hinted_idx > 0:
@@ -241,7 +365,19 @@ def pick_group_key_col(
 
 
 def extract_page_from_chunk_meta(dl_meta: dict[str, Any]) -> int:
-    """Extract page number from Docling chunk metadata."""
+    """Extract page number from Docling chunk metadata.
+
+    Parameters
+    ----------
+    dl_meta : dict[str, Any]
+        Chunk metadata dict produced by Docling, which may contain a
+        nested ``doc_items[*].prov[*].page_no`` path.
+
+    Returns
+    -------
+    int
+        First valid page number found, or ``0`` when unavailable.
+    """
     doc_items = (
         dl_meta.get("doc_items") if isinstance(dl_meta, dict) else None
     )
@@ -280,7 +416,19 @@ class DocumentParser:
         self._converter: Any | None = None
 
     def get_converter(self) -> Any:
-        """Lazy-load the DocumentConverter with OCR/VLM capabilities."""
+        """Lazy-load the DocumentConverter with OCR/VLM capabilities.
+
+        Returns
+        -------
+        DocumentConverter
+            Docling ``DocumentConverter`` instance with PDF pipeline
+            options pre-configured for page-image and picture extraction.
+
+        Raises
+        ------
+        ImportError
+            When the ``docling`` package is not installed.
+        """
         if self._converter is None:
             logger.info(
                 "[docling] Initializing DocumentConverter "

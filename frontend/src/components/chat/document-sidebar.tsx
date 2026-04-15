@@ -18,7 +18,7 @@ interface DocumentSidebarProps {
     refreshToken?: number;
 }
 
-const STATUS_CONFIG: Record<string, { icon: any; label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline'; animate: boolean }> = {
+const STATUS_CONFIG: Record<string, { icon: React.ComponentType<{ className?: string }>; label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline'; animate: boolean }> = {
     processing: { icon: Loader2, label: 'Đang xử lý...', variant: 'secondary', animate: true },
     ready:      { icon: CheckCircle2, label: 'Sẵn sàng', variant: 'default', animate: false },
     error:      { icon: XCircle, label: 'Lỗi', variant: 'destructive', animate: false },
@@ -36,41 +36,47 @@ export function DocumentSidebar({ userId, onAskAboutDocument, visible, refreshTo
         [previewDoc],
     );
 
-    const loadDocuments = useCallback(async () => {
+    const loadDocuments = useCallback(async (signal?: AbortSignal) => {
         if (!userId) return;
         setLoading(true);
         try {
-            const docs = await chatBackend.listDocuments(userId);
-            setDocuments(docs);
+            const docs = await chatBackend.listDocuments(userId, signal);
+            if (!signal?.aborted) {
+                setDocuments(docs);
+            }
         } catch (err) {
+            // Ignore AbortError — expected when component unmounts or effect re-runs
+            if (err instanceof DOMException && err.name === 'AbortError') return;
             console.error('Failed to load documents', err);
         } finally {
-            setLoading(false);
+            if (!signal?.aborted) {
+                setLoading(false);
+            }
         }
     }, [userId]);
 
+    // Load documents when sidebar becomes visible OR when refreshToken bumps (upload done)
     useEffect(() => {
-        if (visible) {
-            void loadDocuments();
-        }
-    }, [visible, loadDocuments]);
+        if (!visible) return;
 
-    // Reload when external trigger bumps (e.g., after upload completes)
-    useEffect(() => {
-        if (visible) {
-            void loadDocuments();
-        }
-    }, [refreshToken, visible, loadDocuments]);
+        const controller = new AbortController();
+        void loadDocuments(controller.signal);
+        return () => controller.abort('cleanup');
+    }, [visible, refreshToken, loadDocuments]);
 
     // Auto-refresh processing documents every 5s until done
     useEffect(() => {
         const hasActive = documents.some(d => d.status === 'processing');
         if (!hasActive || !visible) return;
 
+        const controller = new AbortController();
         const interval = setInterval(() => {
-            void loadDocuments();
+            void loadDocuments(controller.signal);
         }, 5000);
-        return () => clearInterval(interval);
+        return () => {
+            clearInterval(interval);
+            controller.abort('cleanup');
+        };
     }, [documents, visible, loadDocuments]);
 
     const filteredDocs = searchTerm

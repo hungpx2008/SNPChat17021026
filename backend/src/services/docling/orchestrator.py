@@ -37,6 +37,19 @@ class DoclingProcessor:
         """Process a document through Docling's deep pipeline.
 
         Returns structured Markdown + extracted tables with page info.
+
+        Parameters
+        ----------
+        file_path : str
+            Absolute path to the document file (PDF recommended).
+
+        Returns
+        -------
+        ProcessingResult
+            Contains ``markdown``, ``tables``, ``chunks``, ``metadata``,
+            ``page_count``, and ``source_file``.  On failure the result
+            still has valid structure but ``markdown`` is empty and
+            ``metadata`` contains an ``error`` key.
         """
         filename = os.path.basename(file_path)
         logger.info(f"[docling] Deep processing: {filename}")
@@ -326,7 +339,13 @@ _processor: DoclingProcessor | None = None
 
 
 def get_processor() -> DoclingProcessor:
-    """Return the module-level ``DoclingProcessor`` singleton."""
+    """Return the module-level ``DoclingProcessor`` singleton.
+
+    Returns
+    -------
+    DoclingProcessor
+        Lazily created singleton instance.
+    """
     global _processor
     if _processor is None:
         _processor = DoclingProcessor()
@@ -334,5 +353,16 @@ def get_processor() -> DoclingProcessor:
 
 
 def process_document_deep(file_path: str) -> ProcessingResult:
-    """Convenience function for use in Celery tasks."""
+    """Convenience function for use in Celery tasks.
+
+    Parameters
+    ----------
+    file_path : str
+        Absolute path to the document.
+
+    Returns
+    -------
+    ProcessingResult
+        Result from :meth:`DoclingProcessor.process`.
+    """
     return get_processor().process(file_path)

@@ -10,6 +10,8 @@ import os
 import re
 from typing import Any
 
+import httpx
+
 from src.core.constants import RAG_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -33,9 +35,31 @@ def _synthesize_with_llm(
 
     Parameters
     ----------
-    system_prompt : str
+    question : str
+        The user's natural-language question.
+    context_text : str
+        Numbered document snippets from hybrid search.
+    long_term_block : str, optional
+        Mem0 long-term memory text.
+    summary_block : str, optional
+        Session summary text.
+    recent_block : str, optional
+        Recent conversation history.
+    system_prompt : str, optional
         Dynamic system prompt from SystemPromptBuilder. Falls back to
-        static RAG_SYSTEM_PROMPT if empty.
+        static ``RAG_SYSTEM_PROMPT`` if empty.
+
+    Returns
+    -------
+    str
+        Synthesised answer text.
+
+    Raises
+    ------
+    httpx.HTTPError
+        On HTTP/network failures.
+    KeyError, ValueError
+        When the LLM response is malformed or empty.
     """
     openai_key = os.getenv("OPENAI_API_KEY", "")
     openai_base = os.getenv("OPENAI_BASE_URL", "https://ezaiapi.com")
@@ -90,8 +114,11 @@ def _synthesize_with_llm(
                 "Check LLM_MODEL in .env — ensure it supports chat completions."
             )
         return content.strip()
-    except Exception as e:
-        logger.error(f"[LLM] Synthesis failed: {e}")
+    except httpx.HTTPError as e:
+        logger.error(f"[LLM] Synthesis HTTP error: {e}")
+        raise
+    except (KeyError, ValueError) as e:
+        logger.error(f"[LLM] Synthesis response parsing failed: {e}")
         raise
 
 
@@ -109,6 +136,16 @@ def _clean_snippet_text(text: str) -> str:
     - Tab characters → space separator
     - Lines containing ONLY numbers/prices scattered across (table debris) → joined with context
     - Stray whitespace / redundant blank lines
+
+    Parameters
+    ----------
+    text : str
+        Raw snippet from Qdrant/document extraction.
+
+    Returns
+    -------
+    str
+        Cleaned text suitable for LLM context.
     """
     # 0. Normalize Windows line endings
     text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -136,7 +173,18 @@ def _clean_snippet_text(text: str) -> str:
 
 
 def _strip_markdown_tables(text: str) -> str:
-    """Remove markdown table blocks from model output."""
+    """Remove markdown table blocks from model output.
+
+    Parameters
+    ----------
+    text : str
+        Raw LLM output that may contain markdown tables.
+
+    Returns
+    -------
+    str
+        Text with table rows and pipe-heavy debris lines removed.
+    """
     lines = text.splitlines()
     out: list[str] = []
     i = 0
@@ -176,6 +224,16 @@ def _split_sentences_vi(text: str) -> list[str]:
     Strategy: only split on [.!?] that is followed by whitespace AND an uppercase letter
     or a Vietnamese uppercase (À-Ỹ). This avoids splitting "50.000 VNĐ. Đây là..."
     vs keeping "Dr. Nguyễn" intact.
+
+    Parameters
+    ----------
+    text : str
+        Vietnamese prose text.
+
+    Returns
+    -------
+    list[str]
+        Individual sentences with placeholders restored.
     """
     # Protect known patterns from being split
     # 1. Replace "..." with a placeholder
@@ -205,7 +263,19 @@ def _split_sentences_vi(text: str) -> list[str]:
 
 
 def _sanitize_generated_answer(text: str) -> str:
-    """Normalize model output into concise, clean prose."""
+    """Normalize model output into concise, clean prose.
+
+    Parameters
+    ----------
+    text : str
+        Raw LLM-generated answer.
+
+    Returns
+    -------
+    str
+        Cleaned text with citation debris, excess whitespace, and
+        dangling conjunctions removed.
+    """
     clean = text or ""
 
     # Remove model-generated citation footer; backend will append canonical footer later.
@@ -232,7 +302,19 @@ def _sanitize_generated_answer(text: str) -> str:
 
 
 def _build_fallback_answer(context_blocks: list[str]) -> str:
-    """Build a clean fallback when LLM synthesis fails."""
+    """Build a clean fallback when LLM synthesis fails.
+
+    Parameters
+    ----------
+    context_blocks : list[str]
+        Numbered context snippets from search results.
+
+    Returns
+    -------
+    str
+        A Vietnamese fallback message, either citing the closest snippet
+        or a generic "not found" message.
+    """
     if not context_blocks:
         return (
             "Chưa tìm thấy dữ liệu phù hợp trong tài liệu hiện có; "
@@ -244,7 +326,20 @@ def _build_fallback_answer(context_blocks: list[str]) -> str:
 
 
 def _format_citations_footer(citations: list[dict[str, Any]]) -> str:
-    """Format citations into a clean markdown footer."""
+    """Format citations into a clean markdown footer.
+
+    Parameters
+    ----------
+    citations : list[dict[str, Any]]
+        Citation dicts with ``index``, ``file``, ``page``, ``headings``,
+        ``score``, and optional ``doc_id``.
+
+    Returns
+    -------
+    str
+        Markdown footer starting with ``---`` and ``📚 **Nguồn tham khảo:**``,
+        or ``""`` when there are no citations.
+    """
     if not citations:
         return ""
 

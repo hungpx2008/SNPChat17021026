@@ -98,7 +98,7 @@ export async function getMultimodalHelp(
     "5.  **NO CODE EVER:** TUYỆT ĐỐI KHÔNG BAO GIỜ hiển thị mã code (Python, SQL, HTML, v.v.), câu lệnh kỹ thuật, hoặc hướng dẫn lập trình. Chỉ trả lời bằng ngôn ngữ tự nhiên, tập trung vào kết quả nghiệp vụ. NEVER suggest generating scripts, running code, or programming solutions.\n\n" +
     "Use your knowledge, the department context, the provided context, and any provided document/media to answer the user's question.";
 
-  const baseMessages: { role: 'system' | 'user' | 'assistant'; content: any }[] = [
+  const baseMessages: { role: 'system' | 'user' | 'assistant'; content: string | Array<{ type: string; text?: string; image_url?: { url: string } }> }[] = [
     { role: 'system', content: systemPrompt },
   ];
 
@@ -134,7 +134,7 @@ export async function getMultimodalHelp(
     return MultimodalHelpOutputSchema.parse({ response: text, usage });
   }
 
-  const contentParts: any[] = [{
+  const contentParts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [{
     type: 'text',
     text:
       "Based on the context above (treat it as the authoritative context and override any prior knowledge), answer the following question as precisely as possible:\n" +

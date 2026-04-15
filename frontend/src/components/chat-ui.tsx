@@ -71,7 +71,9 @@ export function ChatUI({ department }: { department: string }) {
   // ─── Custom hooks ──────────────────────────────────────────────
   const {
     messages,
-    setMessages,
+    addMessages,
+    replaceMessages,
+    updateMessages,
     messagesLoading,
     messagesEndRef,
     loadSessionMessages,
@@ -82,9 +84,10 @@ export function ChatUI({ department }: { department: string }) {
 
   const {
     chatHistory,
-    setChatHistory,
     activeChatId,
-    setActiveChatId,
+    selectChat,
+    addSession,
+    updateSession,
     sessionsLoading,
     loadSessions,
     handleNewChat: _handleNewChat,
@@ -99,7 +102,7 @@ export function ChatUI({ department }: { department: string }) {
     docRefreshToken,
     handleFileAttachClick,
     handleFileChange,
-  } = useFileAttachment(userIdentifier, setMessages, setError);
+  } = useFileAttachment(userIdentifier, addMessages, setError);
 
   const {
     searchTerm,
@@ -122,7 +125,7 @@ export function ChatUI({ department }: { department: string }) {
     regenerateMessage,
     startEditing,
     cancelEditing,
-  } = useConversationTree(activeChatId, setMessages, mapBackendMessage);
+  } = useConversationTree(activeChatId, replaceMessages, mapBackendMessage);
 
   // ─── SSE stream for Celery task completion ─────────────────────
   // Sync ref với state để useSessionStream dùng được session ID mới nhất
@@ -136,14 +139,11 @@ export function ChatUI({ department }: { department: string }) {
       try {
         const finalMessages = await loadSessionMessages(sessionId);
         if (finalMessages) {
-          setMessages(finalMessages); // ← Cập nhật UI chat ngay lập tức
-          setChatHistory((prev) =>
-            prev.map((chat) =>
-              chat.id === sessionId
-                ? { ...chat, messages: finalMessages }
-                : chat,
-            ),
-          );
+          replaceMessages(finalMessages); // ← Cập nhật UI chat ngay lập tức
+          updateSession(sessionId, (chat) => ({
+            ...chat,
+            messages: finalMessages,
+          }));
         }
       } catch {
         // loadSessionMessages already logs errors
@@ -152,7 +152,7 @@ export function ChatUI({ department }: { department: string }) {
       setStreamSessionId(null); // reset SSE session sau khi nhận xong
       setSubmitting(false);
     }
-  }, [loadSessionMessages, setMessages, setChatHistory]);
+  }, [loadSessionMessages, replaceMessages, updateSession]);
 
   useSessionStream(streamSessionId, waitingForTask, handleSSEMessageReady);
 
@@ -223,13 +223,13 @@ export function ChatUI({ department }: { department: string }) {
   useEffect(() => {
     loadSessions().then((sessions) => {
       if (sessions && sessions.length === 0) {
-        setActiveChatId(null);
+        selectChat(null);
         resetMessages();
       }
     }).catch(() => {
       setError("Failed to load sessions. Please try again.");
     });
-  }, [loadSessions, setActiveChatId, resetMessages]);
+  }, [loadSessions, selectChat, resetMessages]);
 
   // ─── Bridging callbacks (hooks → UI) ──────────────────────────
   const handleNewChat = useCallback(() => {
@@ -238,9 +238,9 @@ export function ChatUI({ department }: { department: string }) {
 
   const handleSelectChat = useCallback(
     async (chatId: string) => {
-      await _handleSelectChat(chatId, loadSessionMessages, setMessages, clearSearch);
+      await _handleSelectChat(chatId, loadSessionMessages, replaceMessages, clearSearch);
     },
-    [_handleSelectChat, loadSessionMessages, setMessages, clearSearch],
+    [_handleSelectChat, loadSessionMessages, replaceMessages, clearSearch],
   );
 
   const handleDeleteChat = useCallback(
@@ -251,7 +251,7 @@ export function ChatUI({ department }: { department: string }) {
   );
 
   const handleSearchResultSelect = useCallback(
-    async (result: { metadata: Record<string, any> }) => {
+    async (result: { metadata: Record<string, unknown> }) => {
       const sessionId = result.metadata?.session_id as string | undefined;
       if (sessionId) {
         await handleSelectChat(sessionId);
@@ -291,17 +291,14 @@ export function ChatUI({ department }: { department: string }) {
           });
           sessionId = createdSession.id;
           activeSessionIdRef.current = sessionId; // ← cập nhật ref ngay, không chờ React re-render
-          setActiveChatId(sessionId);
-          setChatHistory((prev) => [
-            {
-              id: createdSession.id,
-              title: createdSession.title ?? sessionTitle ?? t("newChatTooltip"),
-              messages: [],
-              department: createdSession.department ?? department,
-              created_at: createdSession.created_at,
-            },
-            ...prev,
-          ]);
+          selectChat(sessionId);
+          addSession({
+            id: createdSession.id,
+            title: createdSession.title ?? sessionTitle ?? t("newChatTooltip"),
+            messages: [],
+            department: createdSession.department ?? department,
+            created_at: createdSession.created_at,
+          });
         } catch (err) {
           console.error("Failed to create session", err);
           setError("Unable to create a new chat. Please try again.");
@@ -341,21 +338,15 @@ export function ChatUI({ department }: { department: string }) {
           ),
       };
 
-      setMessages((prev) => [...prev, userMessage, thinkingMessage]);
-      setChatHistory((prev) =>
-        prev.map((chat) =>
-          chat.id === sessionId
-            ? {
-                ...chat,
-                title:
-                  chat.title && chat.title !== t("newChatTooltip")
-                    ? chat.title
-                    : sessionTitle ?? chat.title,
-                messages: [...chat.messages, userMessage],
-              }
-            : chat,
-        ),
-      );
+      addMessages(userMessage, thinkingMessage);
+      updateSession(sessionId, (chat) => ({
+        ...chat,
+        title:
+          chat.title && chat.title !== t("newChatTooltip")
+            ? chat.title
+            : sessionTitle ?? chat.title,
+        messages: [...chat.messages, userMessage],
+      }));
 
       // Clear form
       formRef.current?.reset();
@@ -374,7 +365,7 @@ export function ChatUI({ department }: { department: string }) {
           mode: agentMode,
         });
 
-        const taskDispatched = (appendResult as any).task_dispatched === true;
+        const taskDispatched = (appendResult as Record<string, unknown>)?.task_dispatched === true;
 
         if (taskDispatched) {
           // SSE sẽ xử lý response — set streamSessionId ngay để SSE connect đúng session
@@ -419,9 +410,10 @@ export function ChatUI({ department }: { department: string }) {
       t,
       userIdentifier,
       submitting,
-      setActiveChatId,
-      setChatHistory,
-      setMessages,
+      selectChat,
+      addSession,
+      updateSession,
+      addMessages,
       setAttachedFile,
     ],
   );

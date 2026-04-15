@@ -28,8 +28,8 @@ export function ForgotPasswordForm() {
     try {
       await sendPasswordReset(email);
       setMessage(t('passwordResetSent'));
-    } catch (error: any) {
-      setError(error.message ?? "Unable to send password reset email.");
+    } catch (error: unknown) {
+      setError(error instanceof Error ? error.message : "Unable to send password reset email.");
     } finally {
         setLoading(false);
     }

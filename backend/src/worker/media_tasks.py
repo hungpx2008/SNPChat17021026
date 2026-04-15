@@ -14,6 +14,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from uuid import uuid4
 
+import httpx
+
 from .celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -85,7 +87,7 @@ def process_document(
                             f"[ocr] Image OCR extracted {len(ocr_text)} chars "
                             f"(confidence={ocr_result.confidence:.2f})"
                         )
-                except Exception as ocr_exc:
+                except (OSError, RuntimeError) as ocr_exc:
                     logger.warning(f"[ocr] Image OCR failed: {ocr_exc}. Using VLM only.")
 
             # Combine: OCR text (primary if available) + VLM description (supplementary)
@@ -113,7 +115,7 @@ def process_document(
                     if os.path.exists(pdf_candidate):
                         preview_pdf_path = pdf_candidate
                         logger.info(f"[process] PPTX preview PDF at {preview_pdf_path}")
-                except Exception as exc:
+                except (OSError, subprocess.SubprocessError) as exc:
                     logger.warning(f"[process] PPTX→PDF conversion failed: {exc}")
 
             logger.info(f"[process] Sending to Docling: {filename}")
@@ -187,7 +189,7 @@ def process_document(
                                 f"[ocr] PaddleOCR returned empty text for {filename}. "
                                 "Keeping Docling output."
                             )
-                    except Exception as ocr_exc:
+                    except (OSError, RuntimeError) as ocr_exc:
                         logger.warning(
                             f"[ocr] PaddleOCR failed for {filename}: {ocr_exc}. "
                             "Continuing with Docling output."
@@ -218,8 +220,8 @@ def process_document(
             meta_extra=deep_meta,
         )
 
-    except Exception as exc:
-        logger.exception(f"[process] Error processing {filename}: {exc}")
+    except Exception as exc:  # Justified: Docling pipeline may raise unpredictable errors
+        logger.exception("[process] Error processing %s (%s): %s", filename, type(exc).__name__, exc)
         if document_id:
             from .helpers import _update_document_status
             _update_document_status(
@@ -272,7 +274,7 @@ def _do_full_processing(
             raw_page = item.get("page") or 1
             try:
                 page_num = max(1, int(raw_page) if raw_page is not None else 1)
-            except Exception:
+            except (ValueError, TypeError):
                 page_num = 1
             parent_data.append({
                 "content": text,
@@ -394,8 +396,7 @@ def _do_full_processing(
             })
         indexed = lexical.index_documents_batch(docs_to_index)
         logger.info(f"[whoosh] Indexed {indexed} chunks for {filename}")
-    except Exception as exc:
-        # Whoosh indexing failure is non-fatal; semantic search still works
+    except Exception as exc:  # Justified: Whoosh indexing non-fatal; semantic search still works
         logger.warning(f"[whoosh] Failed to index {filename}: {exc}")
 
     # 5. Update document status in DB
@@ -461,7 +462,7 @@ def transcribe_audio(
 
     try:
         model = _get_whisper_model()
-    except Exception as exc:
+    except (OSError, RuntimeError) as exc:
         logger.exception(f"[stt] Failed to load Whisper model: {exc}")
         if document_id:
             _update_document_status(document_id=document_id, status="error", error_message=f"Whisper load failed: {exc}")
@@ -532,8 +533,8 @@ def transcribe_audio(
             "chunks": len(chunks_with_pages),
         }
 
-    except Exception as exc:
-        logger.exception(f"[stt] Error transcribing {filename}: {exc}")
+    except Exception as exc:  # Justified: Whisper transcription may raise various internal errors
+        logger.exception("[stt] Error transcribing %s (%s): %s", filename, type(exc).__name__, exc)
         if document_id:
             _update_document_status(document_id=document_id, status="error", error_message=str(exc))
         raise self.retry(exc=exc, countdown=10)
@@ -560,8 +561,8 @@ def generate_chart(
         lida = get_lida_service()
         result = lida.generate_chart(query, df, chart_type)
         return {"status": "ok", **result}
-    except Exception as exc:
-        logger.exception(f"Error generating chart: {exc}")
+    except Exception as exc:  # Justified: Lida chart generation may raise various internal errors
+        logger.exception("Error generating chart (%s): %s", type(exc).__name__, exc)
         raise self.retry(exc=exc, countdown=3)
 
 
@@ -579,6 +580,6 @@ def text_to_speech(
         tts = get_tts_service()
         result = tts.synthesize_sync(text, voice, output_format)
         return {"status": "ok", **result}
-    except Exception as exc:
-        logger.exception(f"Error in TTS: {exc}")
+    except Exception as exc:  # Justified: Edge-TTS may raise various internal errors
+        logger.exception("Error in TTS (%s): %s", type(exc).__name__, exc)
         raise self.retry(exc=exc, countdown=3)

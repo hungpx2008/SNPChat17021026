@@ -57,9 +57,9 @@ services:
       PYTHONUNBUFFERED: "1"
       # AI Keys (Loaded from .env by docker-compose interpolation)
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://ezaiapi.com}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-https://ezaiapi.com}
     ports:
       - "8000:8000"
     depends_on:
@@ -80,8 +80,8 @@ services:
       BACKEND_INTERNAL_URL: http://backend:8000
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
-      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-openai/gpt-4o-mini}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://ezaiapi.com}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-gpt-5.3-codex}
     ports:
       - "3000:3000"
     depends_on:
@@ -110,7 +110,7 @@ services:
       PYTHONUNBUFFERED: "1"
       # AI Keys for RAG
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://ezaiapi.com}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     depends_on:
       - redis
@@ -131,9 +131,9 @@ services:
       PYTHONUNBUFFERED: "1"
       # AI Keys
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://ezaiapi.com}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+      OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-https://ezaiapi.com}
       # Qdrant
       QDRANT_URL: http://qdrant:6333
       QDRANT_HOST: qdrant
@@ -168,7 +168,7 @@ services:
       ENABLE_PADDLE_OCR: "true"
       # AI Keys for RAG
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://ezaiapi.com}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     depends_on:
       - redis

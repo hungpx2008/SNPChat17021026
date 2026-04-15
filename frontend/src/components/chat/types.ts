@@ -8,7 +8,7 @@ export interface Message {
   backendId?: string;
   metadata?: {
     attachments?: Attachment[];
-    [key: string]: any;
+    [key: string]: unknown;
   };
   parentMessageId?: string;
   branchIndex?: number;

@@ -44,12 +44,24 @@ async function request<T>(
   options: RequestInit = {},
   query?: Record<string, string | number | undefined>,
   timeoutMs: number = REQUEST_TIMEOUT_MS,
+  /** Optional external signal — when aborted the request is cancelled immediately. */
+  externalSignal?: AbortSignal,
 ): Promise<T> {
   const url = buildRequestUrl(path, query);
   const hasBody = typeof options?.body !== 'undefined';
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const timeoutId = setTimeout(() => controller.abort('timeout'), timeoutMs);
+
+  // Forward external abort → internal controller
+  const onExternalAbort = () => controller.abort(externalSignal?.reason ?? 'cancelled');
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      clearTimeout(timeoutId);
+      throw new DOMException('signal is aborted', 'AbortError');
+    }
+    externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+  }
 
   try {
     const response = await fetch(url.toString(), {
@@ -83,6 +95,7 @@ async function request<T>(
     return (await response.json()) as T;
   } finally {
     clearTimeout(timeoutId);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
   }
 }
 
@@ -266,8 +279,8 @@ export const chatBackend = {
     }
   },
 
-  async listDocuments(userId: string): Promise<DocumentInfo[]> {
-    return request<DocumentInfo[]>('/upload', undefined, { user_id: userId });
+  async listDocuments(userId: string, signal?: AbortSignal): Promise<DocumentInfo[]> {
+    return request<DocumentInfo[]>('/upload', undefined, { user_id: userId }, REQUEST_TIMEOUT_MS, signal);
   },
 
   async getDocumentStatus(documentId: string): Promise<DocumentInfo> {

@@ -15,11 +15,12 @@ x-common-env: &common-env
   WHOOSH_INDEX_DIR: /data/whoosh_index
   # AI Keys
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
+  OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://ezaiapi.com}
   OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-  OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}
+  OPENROUTER_API_BASE: ${OPENROUTER_API_BASE:-https://ezaiapi.com}
   # AI Model Configuration
-  LLM_MODEL: ${LLM_MODEL:-openai/gpt-4o-mini}
+  LLM_MODEL: ${LLM_MODEL:-claude-opus-4-6}
+  LLM_MODEL_LIGHT: ${LLM_MODEL_LIGHT:-gpt-5.3-codex}
   # Docling chunking & table serializer tuning
   # Model: AITeamVN/Vietnamese_Embedding_v2 (BAAI/bge-m3 base, max_seq=2048)
   # 2048 = parent chunk size for 2-tier parent-child retrieval (Phase 6)
@@ -124,8 +125,8 @@ services:
       BACKEND_INTERNAL_URL: http://backend:8000
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://openrouter.ai/api/v1}
-      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-openai/gpt-4o-mini}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://ezaiapi.com}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-gpt-5.3-codex}
     ports:
       - "3000:3000"
     depends_on:

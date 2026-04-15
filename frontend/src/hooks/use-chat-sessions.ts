@@ -50,14 +50,14 @@ export function useChatSessions(
     async (
       chatId: string,
       loadSessionMessages: (id: string) => Promise<Message[] | void>,
-      setMessages: (msgs: Message[]) => void,
+      replaceMessages: (msgs: Message[]) => void,
       clearSearch: () => void,
     ) => {
       setActiveChatId(chatId);
       clearSearch();
       const existing = chatHistory.find((chat) => chat.id === chatId);
       if (existing && existing.messages.length > 0) {
-        setMessages(existing.messages);
+        replaceMessages(existing.messages);
         return;
       }
       await loadSessionMessages(chatId);
@@ -76,11 +76,30 @@ export function useChatSessions(
     [activeChatId],
   );
 
+  // ─── Semantic actions (encapsulated API) ────────────────────
+  const selectChat = useCallback((id: string | null) => {
+    setActiveChatId(id);
+  }, []);
+
+  const addSession = useCallback((session: ChatSession) => {
+    setChatHistory((prev) => [session, ...prev]);
+  }, []);
+
+  const updateSession = useCallback(
+    (id: string, updater: (session: ChatSession) => ChatSession) => {
+      setChatHistory((prev) =>
+        prev.map((s) => (s.id === id ? updater(s) : s)),
+      );
+    },
+    [],
+  );
+
   return {
     chatHistory,
-    setChatHistory,
     activeChatId,
-    setActiveChatId,
+    selectChat,
+    addSession,
+    updateSession,
     sessionsLoading,
     loadSessions,
     handleNewChat,

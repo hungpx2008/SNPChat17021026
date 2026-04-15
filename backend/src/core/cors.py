@@ -55,8 +55,8 @@ def build_cors_headers(
         Headers to merge into the Response.
     """
     allow_origin = resolve_cors_origin(request)
-    methods = ", ".join(CORS_ALLOW_METHODS) if is_sse else "*"
-    headers_val = ", ".join(CORS_ALLOW_HEADERS) if is_sse else "*"
+    methods = ", ".join(CORS_ALLOW_METHODS)
+    headers_val = ", ".join(CORS_ALLOW_HEADERS)
 
     result: dict[str, str] = {
         "Access-Control-Allow-Origin": allow_origin,

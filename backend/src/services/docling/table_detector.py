@@ -30,7 +30,21 @@ logger = logging.getLogger(__name__)
 
 
 def _get_table_config(config: dict[str, Any]) -> tuple[int, int, list[str], bool]:
-    """Unpack and validate table configuration dict."""
+    """Unpack and validate table configuration dict.
+
+    Parameters
+    ----------
+    config : dict[str, Any]
+        Raw configuration with keys ``markdown_max_cols``,
+        ``markdown_max_cells``, ``group_key_hints``, and
+        ``normalize_table_values``.
+
+    Returns
+    -------
+    tuple[int, int, list[str], bool]
+        ``(markdown_max_cols, markdown_max_cells, group_key_hints,
+        normalize_values)``.
+    """
     markdown_max_cols = int(config.get("markdown_max_cols", 4))
     markdown_max_cells = int(config.get("markdown_max_cells", 36))
     group_key_hints: list[str] = config.get("group_key_hints", [])
@@ -57,7 +71,27 @@ class AdaptiveTableSerializer:
         doc: Any,
         **kwargs: Any,
     ) -> Any:
-        """Serialize a single table item."""
+        """Serialize a single table item.
+
+        Small tables (≤ ``markdown_max_cols`` × ``markdown_max_cells``) are
+        rendered as full Markdown; larger ones use a compact triplet
+        representation with optional currency/unit normalisation.
+
+        Parameters
+        ----------
+        item : Any
+            Docling ``TableItem`` with ``export_to_dataframe`` /
+            ``export_to_markdown`` methods.
+        doc_serializer : Any
+            Docling's ``ChunkingDocSerializer`` context.
+        doc : Any
+            The parent ``Document`` instance.
+
+        Returns
+        -------
+        Any
+            A Docling ``SerResult`` containing the serialised text.
+        """
         # Late imports — only needed at call time inside a chunking run.
         from docling_core.transforms.serializer.common import (
             create_ser_result,
@@ -200,7 +234,24 @@ class TripletSerializerProvider:
         self._config = config or {}
 
     def get_serializer(self, doc: Any = None, **kwargs: Any) -> Any:
-        """Return a ``ChunkingDocSerializer`` for the given document."""
+        """Return a ``ChunkingDocSerializer`` for the given document.
+
+        Parameters
+        ----------
+        doc : Any, optional
+            Docling ``Document`` instance.  May also be passed as a
+            keyword argument (version-dependent).
+
+        Returns
+        -------
+        ChunkingDocSerializer
+            Serialiser wired to :class:`AdaptiveTableSerializer`.
+
+        Raises
+        ------
+        ValueError
+            When no document instance is provided.
+        """
         from docling_core.transforms.chunker.hierarchical_chunker import (
             ChunkingDocSerializer,
         )
@@ -232,5 +283,14 @@ def build_serializer_provider(
     table configuration.
 
     This is the preferred entry point used by ``DocumentChunker``.
+
+    Parameters
+    ----------
+    config : dict[str, Any]
+        Table configuration dict (see module-level docstring for keys).
+
+    Returns
+    -------
+    TripletSerializerProvider
     """
     return TripletSerializerProvider(config=config)

@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import httpx
+
 from src.core.constants import RAG_SCORE_THRESHOLD, RAG_SEARCH_LIMIT
 
 logger = logging.getLogger(__name__)
@@ -27,7 +29,22 @@ def _run_hybrid_search(
 ) -> list:
     """Run query enhancement → semantic cache → hybrid search → fallback.
 
-    Returns a list of SearchResult objects ready for context building.
+    Parameters
+    ----------
+    question : str
+        Natural-language user question.
+    user_id : str or None
+        Current user for access-control filtering.
+    department : str or None
+        Department for scoped document access.
+    embed_fn : Callable[[str], list[float]]
+        Embedding function used by the semantic fallback path.
+
+    Returns
+    -------
+    tuple[list, EnhancedQuery]
+        ``(hybrid_results, enhanced)`` — search results with parent
+        content resolved, plus the enhancement metadata.
     """
     from src.services.search.query_enhancer import QueryEnhancer, QueryStrategy
     from src.services.search.hybrid_search import HybridSearchService
@@ -72,7 +89,17 @@ def _run_hybrid_search(
 def _check_semantic_cache(question: str, user_id: str | None):
     """Check semantic cache for previously cached search results.
 
-    Returns list of SearchResult on hit, None on miss/error.
+    Parameters
+    ----------
+    question : str
+        User question to look up.
+    user_id : str or None
+        Scoping key for the cache.
+
+    Returns
+    -------
+    list[SearchResult] or None
+        Cached results on hit, ``None`` on miss or error.
     """
     try:
         import asyncio
@@ -87,13 +114,23 @@ def _check_semantic_cache(question: str, user_id: str | None):
             results = [SearchResult(**item) for item in cached]
             logger.info(f"[RAG] Semantic cache HIT: {len(results)} results")
             return results
-    except Exception as e:
-        logger.warning(f"[RAG] Semantic cache lookup failed: {e}")
+    except Exception as e:  # Justified: async cache involves event loop + Redis, many failure modes
+        logger.warning("[RAG] Semantic cache lookup failed (%s): %s", type(e).__name__, e)
     return None
 
 
 def _store_semantic_cache(question: str, hybrid_results: list, user_id: str | None) -> None:
-    """Store hybrid search results in semantic cache for future queries."""
+    """Store hybrid search results in semantic cache for future queries.
+
+    Parameters
+    ----------
+    question : str
+        Original user question (cache key).
+    hybrid_results : list
+        ``SearchResult`` objects to serialise and cache.
+    user_id : str or None
+        Scoping key for the cache.
+    """
     try:
         import asyncio
         from src.services.search.semantic_cache import SemanticCache
@@ -115,8 +152,8 @@ def _store_semantic_cache(question: str, hybrid_results: list, user_id: str | No
         _loop.run_until_complete(_cache.put(question, serialized, user_id))
         _loop.close()
         logger.info(f"[RAG] Cached {len(serialized)} results for future queries")
-    except Exception as e:
-        logger.warning(f"[RAG] Semantic cache store failed: {e}")
+    except Exception as e:  # Justified: async cache involves event loop + Redis, many failure modes
+        logger.warning("[RAG] Semantic cache store failed (%s): %s", type(e).__name__, e)
 
 
 def _save_rag_result(
@@ -126,7 +163,23 @@ def _save_rag_result(
     hybrid_results: list,
     enhanced,
 ) -> None:
-    """Save RAG answer via Backend API and store chunk metadata."""
+    """Save RAG answer via Backend API and store chunk metadata.
+
+    Parameters
+    ----------
+    result_text : str
+        Final synthesised answer text.
+    session_id : str
+        Chat session to post the message into.
+    target_message_id : str or None
+        If set, patches an existing placeholder message instead of
+        creating a new one.
+    hybrid_results : list
+        ``SearchResult`` objects whose ``doc_id`` values are stored in
+        message metadata for feedback accuracy.
+    enhanced : EnhancedQuery
+        Query enhancement metadata (strategy, sub-queries).
+    """
     import os
     from src.core.http_client import get_http_client
 
@@ -161,12 +214,20 @@ def _save_rag_result(
                     f"{backend_url}/messages/{msg_id}/metadata",
                     json=metadata_patch,
                 )
-    except Exception as e:
-        logger.warning(f"[RAG] Could not store chunk_ids in message metadata: {e}")
+    except (httpx.HTTPError, KeyError) as e:
+        logger.warning("[RAG] Could not store chunk_ids in message metadata: %s", e)
 
 
 def _save_rag_error(session_id: str, target_message_id: str | None) -> None:
-    """Save error message when RAG pipeline fails."""
+    """Save error message when RAG pipeline fails.
+
+    Parameters
+    ----------
+    session_id : str
+        Chat session for the error message.
+    target_message_id : str or None
+        Placeholder message to patch, or ``None`` to create a new one.
+    """
     import os
     from src.core.http_client import get_http_client
 
@@ -186,8 +247,8 @@ def _save_rag_error(session_id: str, target_message_id: str | None) -> None:
                 f"{backend_url}/sessions/{session_id}/messages",
                 json={"content": error_content, "role": "assistant"},
             )
-    except Exception:
-        pass
+    except httpx.HTTPError:
+        pass  # Justified: best-effort error message delivery; original error already logged
 
 
 def _build_qdrant_filter(user_id: str | None, department: str | None):
@@ -199,6 +260,18 @@ def _build_qdrant_filter(user_id: str | None, department: str | None):
 
     Quality gate (must NOT):
       - exclude any chunk marked quality=low via negative feedback
+
+    Parameters
+    ----------
+    user_id : str or None
+        Current user for ownership filter.
+    department : str or None
+        Department for public-document access.
+
+    Returns
+    -------
+    qdrant_client.models.Filter
+        Combined access-control and quality-gate filter.
     """
     from qdrant_client.models import (
         FieldCondition,
@@ -251,8 +324,19 @@ def _fallback_semantic_search(
 
     Parameters
     ----------
+    question : str
+        Natural-language user question.
+    user_id : str or None
+        Current user for access-control filtering.
+    department : str or None
+        Department scope.
     embed_fn : Callable[[str], list[float]]
         The embedding function (``embed_query`` from chat_tasks).
+
+    Returns
+    -------
+    list[SearchResult]
+        Results above ``RAG_SCORE_THRESHOLD``.
     """
     from src.core.qdrant_setup import get_qdrant_client
     from src.services.search.hybrid_search import SearchResult
@@ -294,7 +378,18 @@ def _fallback_semantic_search(
 
 
 def _extract_hybrid_meta(result) -> dict[str, Any]:
-    """Extract normalized metadata from a hybrid SearchResult."""
+    """Extract normalized metadata from a hybrid SearchResult.
+
+    Parameters
+    ----------
+    result : SearchResult
+        A single hybrid search result.
+
+    Returns
+    -------
+    dict[str, Any]
+        Keys: ``fname``, ``page_display``, ``headings``, ``doc_id``.
+    """
     meta = result.metadata or {}
     fname = result.title or meta.get("source_file", "Không rõ")
 
@@ -317,7 +412,22 @@ def _extract_hybrid_meta(result) -> dict[str, Any]:
 
 
 def _maybe_add_image_hint(snippet: str, fname: str, doc_id: str) -> str:
-    """Append image download hint if the source is an image file."""
+    """Append image download hint if the source is an image file.
+
+    Parameters
+    ----------
+    snippet : str
+        Current context snippet text.
+    fname : str
+        Source filename.
+    doc_id : str
+        Document identifier for the download URL.
+
+    Returns
+    -------
+    str
+        Snippet with optional ``[LƯU Ý QUAN TRỌNG …]`` suffix.
+    """
     ext = fname.lower().rsplit(".", 1)[-1] if "." in fname else ""
     if ext in ("jpg", "jpeg", "png") and doc_id:
         snippet += f"\n[LƯU Ý QUAN TRỌNG: Link Tải ảnh gốc là `/api/upload/{doc_id}/download`]"
@@ -334,6 +444,16 @@ def _resolve_parent_content(hybrid_results: list) -> list:
 
     For backward compatibility, results without parent_id keep their original content.
     Multiple children pointing to the same parent are deduped — only the first is kept.
+
+    Parameters
+    ----------
+    hybrid_results : list
+        ``SearchResult`` objects, some of which may have a ``parent_id``.
+
+    Returns
+    -------
+    list
+        Results with parent content resolved and duplicates removed.
     """
     from src.services.parent_chunk_store import fetch_parent_content
 
@@ -374,7 +494,20 @@ def _resolve_parent_content(hybrid_results: list) -> list:
 def _build_hybrid_context_and_citations(
     hybrid_results: list,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Build context blocks and citations from hybrid search results."""
+    """Build context blocks and citations from hybrid search results.
+
+    Parameters
+    ----------
+    hybrid_results : list
+        ``SearchResult`` objects with resolved parent content.
+
+    Returns
+    -------
+    tuple[list[dict[str, Any]], list[str]]
+        ``(citations, context_blocks)`` — citations are dicts with
+        ``index``, ``file``, ``page``, ``headings``, ``score``, etc.;
+        context blocks are ``"[N] snippet"`` strings.
+    """
     citations: list[dict[str, Any]] = []
     context_blocks: list[str] = []
     seen_citations: set[str] = set()

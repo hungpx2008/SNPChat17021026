@@ -16,6 +16,10 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from uuid import uuid4
 
+import httpx
+import sqlalchemy.exc
+from qdrant_client.http import exceptions as qdrant_exc
+
 from src.core.constants import (
     CHAT_CHUNK_OVERLAP,
     CHAT_CHUNK_SIZE,
@@ -129,8 +133,11 @@ def process_chat_response(
             logger.info(f"[chat_priority] Stored {len(points)} chunks for message {message_id}")
 
         return {"status": "ok", "message_id": message_id, "chunks": len(points)}
-    except Exception as exc:
-        logger.exception(f"Error processing chat response: {exc}")
+    except (qdrant_exc.UnexpectedResponse, qdrant_exc.ResponseHandlingException) as exc:
+        logger.exception("Qdrant error processing chat response: %s", exc)
+        raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+    except (OSError, RuntimeError) as exc:
+        logger.exception("Embedding/model error processing chat response: %s", exc)
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
 
 
@@ -162,8 +169,8 @@ def store_memory(
         logger.info(f"[mem0] Memory stored for user {user_id}")
         return {"status": "ok", "user_id": user_id}
 
-    except Exception as exc:
-        logger.exception(f"Error storing memory: {exc}")
+    except Exception as exc:  # Justified: Mem0 local lib may raise unpredictable errors
+        logger.exception("Error storing memory (%s): %s", type(exc).__name__, exc)
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
 
 
@@ -208,9 +215,9 @@ def rag_document_search(
                     recent_block=unified_ctx.get("recent_block", ""),
                     system_prompt=unified_ctx.get("system_prompt", ""),
                 )
-            except Exception as e:
+            except (httpx.HTTPError, KeyError, ValueError) as e:
                 llm_error = str(e)
-                logger.error(f"[RAG] LLM synthesis FAILED: {e}")
+                logger.error("[RAG] LLM synthesis FAILED: %s", e)
 
         if not result_text:
             result_text = _build_fallback_answer([] if llm_error else context_blocks)
@@ -226,8 +233,8 @@ def rag_document_search(
         publish_task_complete(session_id)
         return {"status": "success", "question": question, "citations": len(citations)}
 
-    except Exception as exc:
-        logger.exception(f"Error in RAG document search: {exc}")
+    except Exception as exc:  # Justified: RAG pipeline orchestrator — must always save error response
+        logger.exception("Error in RAG document search (%s): %s", type(exc).__name__, exc)
         _save_rag_error(session_id, target_message_id)
         from .helpers import publish_task_complete
         publish_task_complete(session_id)
@@ -317,8 +324,8 @@ def process_feedback(
             "downgraded": downgraded,
         }
 
-    except Exception as exc:
-        logger.exception(f"Error processing feedback: {exc}")
+    except (sqlalchemy.exc.SQLAlchemyError, qdrant_exc.UnexpectedResponse) as exc:
+        logger.exception("Error processing feedback: %s", exc)
         return {"status": "error", "message": str(exc)}
 
 
@@ -430,6 +437,9 @@ def summarize_session_history(
 
         return {"status": "ok", "session_id": session_id, "summary_length": len(summary)}
 
-    except Exception as exc:
-        logger.exception(f"Error summarizing session: {exc}")
+    except (httpx.HTTPError, KeyError, ValueError) as exc:
+        logger.exception("LLM/parsing error summarizing session: %s", exc)
+        return {"status": "error", "message": str(exc)}
+    except sqlalchemy.exc.SQLAlchemyError as exc:
+        logger.exception("DB error summarizing session: %s", exc)
         return {"status": "error", "message": str(exc)}

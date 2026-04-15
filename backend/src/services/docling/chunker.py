@@ -43,7 +43,21 @@ class DocumentChunker:
         headings: list[str],
         row_keys: list[str],
     ) -> str:
-        """Build a contextual prefix string for embedding text."""
+        """Build a contextual prefix string for embedding text.
+
+        Parameters
+        ----------
+        headings : list[str]
+            Hierarchical heading chain (up to last 3 used).
+        row_keys : list[str]
+            Table row key slugs extracted from ``[tbl_cell]`` markers.
+
+        Returns
+        -------
+        str
+            Pipe-separated prefix like ``"heading: A > B | row_key: x, y"``,
+            or ``""`` when both inputs are empty.
+        """
         prefix_parts: list[str] = []
         clean_headings = [
             h.strip() for h in headings if h and h.strip()
@@ -69,6 +83,19 @@ class DocumentChunker:
         Uses a conservative token estimate (chars / 3) to stay within the
         embedding model's token budget.  Vietnamese text averages ~3-4
         chars per token, so dividing by 3 gives a safe upper-bound.
+
+        Parameters
+        ----------
+        chunks : list[ChunkData]
+            Ordered chunk list from ``build_chunks``.
+        max_chars : int
+            Maximum character length for a merged chunk (further clamped
+            by ``DOCLING_CHUNK_MAX_TOKENS * 3``).
+
+        Returns
+        -------
+        list[ChunkData]
+            Chunks with same-page, same-row-key neighbours merged.
         """
         if len(chunks) < 2:
             return chunks
@@ -130,6 +157,19 @@ class DocumentChunker:
 
         Falls back to an empty list when optional dependencies or the
         tokeniser are unavailable.
+
+        Parameters
+        ----------
+        doc : Any
+            A Docling ``Document`` object returned by ``DocumentConverter``.
+        source_file : str
+            Original filename, used only for logging.
+
+        Returns
+        -------
+        list[ChunkData]
+            Embedding-ready chunks with heading prefixes and group-lock
+            merging applied.
         """
         try:
             from docling.chunking import HybridChunker

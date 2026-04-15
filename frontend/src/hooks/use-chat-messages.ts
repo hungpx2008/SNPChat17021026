@@ -33,7 +33,7 @@ export function useChatMessages(t: TranslateFn, department: string) {
     (message: BackendMessage): Message => {
       const meta = (message.metadata ?? {}) as {
         attachment?: AttachedFile | null;
-        attachments?: any[];
+        attachments?: Attachment[];
       };
       if (meta?.attachment) {
         return {
@@ -93,9 +93,27 @@ export function useChatMessages(t: TranslateFn, department: string) {
     setMessages([welcomeMessage()]);
   }, [welcomeMessage]);
 
+  // ─── Semantic actions (encapsulated API) ────────────────────
+  const addMessages = useCallback((...msgs: Message[]) => {
+    setMessages((prev) => [...prev, ...msgs]);
+  }, []);
+
+  const replaceMessages = useCallback((msgs: Message[]) => {
+    setMessages(msgs);
+  }, []);
+
+  const updateMessages = useCallback(
+    (updater: (prev: Message[]) => Message[]) => {
+      setMessages(updater);
+    },
+    [],
+  );
+
   return {
     messages,
-    setMessages,
+    addMessages,
+    replaceMessages,
+    updateMessages,
     messagesLoading,
     messagesEndRef,
     loadSessionMessages,
