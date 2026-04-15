@@ -1,3 +1,6 @@
+import { BackendError } from './backend-error';
+import { REQUEST_TIMEOUT_MS, UPLOAD_TIMEOUT_MS } from '@/lib/constants';
+
 const API_BASE_URL = (
   (typeof window === 'undefined' ? process.env.BACKEND_INTERNAL_URL : undefined) ||
   process.env.NEXT_PUBLIC_BACKEND_URL ||
@@ -40,39 +43,47 @@ async function request<T>(
   path: string,
   options: RequestInit = {},
   query?: Record<string, string | number | undefined>,
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<T> {
   const url = buildRequestUrl(path, query);
   const hasBody = typeof options?.body !== 'undefined';
-  const response = await fetch(url.toString(), {
-    ...options,
-    headers: {
-      ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
-      ...(options.headers ?? {}),
-    },
-    cache: 'no-store',
-  });
 
-  if (!response.ok) {
-    let errorText = await response.text();
-    try {
-      const errorJson = JSON.parse(errorText);
-      // Handle nested error structure from backend (e.g. { status: { error: "..." } })
-      if (errorJson.status?.error) {
-        errorText = errorJson.status.error;
-      } else if (errorJson.detail) {
-        errorText = typeof errorJson.detail === 'string' ? errorJson.detail : JSON.stringify(errorJson.detail);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url.toString(), {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
+        ...(options.headers ?? {}),
+      },
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      let errorText = await response.text();
+      try {
+        const errorJson = JSON.parse(errorText);
+        // Handle nested error structure from backend (e.g. { status: { error: "..." } })
+        if (errorJson.status?.error) {
+          errorText = errorJson.status.error;
+        } else if (errorJson.detail) {
+          errorText = typeof errorJson.detail === 'string' ? errorJson.detail : JSON.stringify(errorJson.detail);
+        }
+      } catch {
+        // ignore JSON parse error, use raw text
       }
-    } catch {
-      // ignore JSON parse error, use raw text
+      throw new BackendError(response.status, response.statusText, errorText, url);
     }
-    throw new Error(
-      `Backend request failed: ${response.status} ${response.statusText} - ${errorText}`,
-    );
+    if (response.status === 204) {
+      return null as T;
+    }
+    return (await response.json()) as T;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  if (response.status === 204) {
-    return null as T;
-  }
-  return (await response.json()) as T;
 }
 
 export interface BackendSession {
@@ -109,7 +120,7 @@ export interface SearchResult {
   text: string;
   score: number;
   source: string;
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
 }
 
 export interface DocumentInfo {
@@ -179,7 +190,7 @@ export const chatBackend = {
 
   async appendMessage(
     sessionId: string,
-    payload: { role: 'user' | 'assistant' | 'system'; content: string; metadata?: any; mode?: 'auto' | 'chat' | 'sql' | 'rag' },
+    payload: { role: 'user' | 'assistant' | 'system'; content: string; metadata?: Record<string, unknown>; mode?: 'auto' | 'chat' | 'sql' | 'rag' },
   ): Promise<BackendMessage> {
     return request<BackendMessage>(`/sessions/${sessionId}/messages`, {
       method: 'POST',
@@ -214,35 +225,45 @@ export const chatBackend = {
     }
 
     const url = buildRequestUrl('/upload');
-    const response = await fetch(url, {
-      method: 'POST',
-      body: formData,
-      cache: 'no-store',
-    });
-    if (!response.ok) {
-      let errorDetail: string | null = null;
-      const contentType = response.headers.get('content-type') || '';
-      if (contentType.includes('application/json')) {
-        try {
-          const json = await response.json();
-          errorDetail = json.detail || json.message || JSON.stringify(json);
-        } catch {
-          // ignore
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        let errorDetail: string | null = null;
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          try {
+            const json = await response.json();
+            errorDetail = json.detail || json.message || JSON.stringify(json);
+          } catch {
+            // ignore
+          }
         }
-      }
-      if (!errorDetail) {
-        try {
-          errorDetail = await response.text();
-        } catch {
-          errorDetail = 'Unknown error';
+        if (!errorDetail) {
+          try {
+            errorDetail = await response.text();
+          } catch {
+            errorDetail = 'Unknown error';
+          }
         }
+        throw new BackendError(
+          response.status,
+          response.statusText,
+          errorDetail || 'Upload failed',
+          url,
+        );
       }
-      const error: any = new Error(errorDetail || 'Upload failed');
-      error.status = response.status;
-      error.detail = errorDetail;
-      throw error;
+      return response.json();
+    } finally {
+      clearTimeout(timeoutId);
     }
-    return response.json();
   },
 
   async listDocuments(userId: string): Promise<DocumentInfo[]> {

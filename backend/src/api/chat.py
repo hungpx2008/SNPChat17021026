@@ -28,7 +28,7 @@ from src.services.chat_service import ChatService
 from src.services.conversation_tree import ConversationTree
 from src.api.deps import get_db_session, get_session_or_404
 from src.core.redis_client import get_redis
-from src.core.config import get_settings
+from src.core.cors import build_cors_headers
 
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -396,26 +396,9 @@ async def update_message_metadata(
 async def stream_session_preflight(session_id: UUID, request: Request):
     """Handle CORS preflight for the SSE stream endpoint."""
     from fastapi.responses import Response
-    settings = get_settings()
-    origin = request.headers.get("origin", "")
-    if "*" in settings.allowed_origins:
-        allow_origin = "*"
-    elif origin in settings.allowed_origins:
-        allow_origin = origin
-    elif settings.allowed_origins:
-        allow_origin = settings.allowed_origins[0]
-    else:
-        allow_origin = "*"
     return Response(
         status_code=204,
-        headers={
-            "Access-Control-Allow-Origin": allow_origin,
-            "Access-Control-Allow-Credentials": "true",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization",
-            "Access-Control-Max-Age": "86400",
-            "Vary": "Origin",
-        },
+        headers=build_cors_headers(request, is_preflight=True, is_sse=True),
     )
 
 
@@ -432,17 +415,7 @@ async def stream_session(session_id: UUID, request: Request) -> StreamingRespons
     apply them to StreamingResponse (long-lived connections bypass middleware).
     Heartbeat every 20s keeps Cloudflare from closing the connection (100s timeout).
     """
-    settings = get_settings()
-    origin = request.headers.get("origin", "")
-    # Resolve the correct Allow-Origin value for this request
-    if "*" in settings.allowed_origins:
-        allow_origin = "*"
-    elif origin in settings.allowed_origins:
-        allow_origin = origin
-    elif settings.allowed_origins:
-        allow_origin = settings.allowed_origins[0]
-    else:
-        allow_origin = "*"
+    cors = build_cors_headers(request, is_sse=True)
 
     return StreamingResponse(
         _sse_event_generator(session_id),
@@ -454,11 +427,7 @@ async def stream_session(session_id: UUID, request: Request) -> StreamingRespons
             "X-Accel-Buffering": "no",          # disable nginx/Cloudflare buffering
             "Transfer-Encoding": "chunked",
             # CORS — must be set explicitly on StreamingResponse
-            "Access-Control-Allow-Origin": allow_origin,
-            "Access-Control-Allow-Credentials": "true",
-            "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization",
-            "Vary": "Origin",
+            **cors,
         },
     )
 
