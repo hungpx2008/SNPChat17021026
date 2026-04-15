@@ -17,7 +17,13 @@ from src.repositories.sessions import SessionRepository
 from src.schemas.schemas import MessageCreate, SearchQuery
 
 
-from src.worker.tasks import process_chat_response, store_memory
+from src.services.task_dispatcher import (
+    dispatch_chat_embed,
+    dispatch_rag_search,
+    dispatch_sql_query,
+    dispatch_store_memory,
+    dispatch_summary_check,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,24 +119,22 @@ class ChatService:
             )
 
         if mode == "sql":
-            from src.worker.tasks import run_sql_query
-            run_sql_query.delay(
+            dispatch_sql_query(
                 question=message.content,
-                session_id=str(session_id),
+                session_id=session_id,
                 user_id=user_id,
             )
         elif mode == "rag":
-            from src.worker.tasks import rag_document_search
-            rag_document_search.delay(
+            dispatch_rag_search(
                 question=message.content,
-                session_id=str(session_id),
+                session_id=session_id,
                 user_id=user_id,
                 department=department,
             )
         else:  # mode == "chat" (default fallback)
-            process_chat_response.delay(
-                session_id=str(session_id),
-                message_id=str(db_message.id),
+            dispatch_chat_embed(
+                session_id=session_id,
+                message_id=db_message.id,
                 content=message.content,
                 role=message.role,
                 user_id=user_id,
@@ -139,11 +143,11 @@ class ChatService:
 
         # Trigger memory storage if condition met
         if user_id and len(message.content.strip()) > 10:
-            store_memory.delay(
+            dispatch_store_memory(
                 user_id=user_id,
                 content=message.content,
                 role=message.role,
-                session_id=str(session_id),
+                session_id=session_id,
                 department=department,
             )
 
@@ -183,12 +187,11 @@ class ChatService:
 
             msg_dicts = self._to_msg_dicts(all_messages)
             estimated_tokens = estimate_conversation_tokens(msg_dicts)
-            llm_model = getattr(self.settings, "llm_model", "openai/gpt-4o-mini")
+            llm_model = getattr(self.settings, "llm_model", "claude-opus-4-6")
             params = get_summarization_params(llm_model, estimated_tokens)
             if params:
-                from src.worker.tasks import summarize_session_history
-                summarize_session_history.delay(
-                    session_id=str(session_id),
+                dispatch_summary_check(
+                    session_id=session_id,
                     keep_count=params["keep_count"],
                     trim_tokens=params["trim_tokens"],
                 )
@@ -196,8 +199,7 @@ class ChatService:
             logger.warning(f"Smart summarization check failed, using fallback: {e}")
             msg_count = sum(1 for _ in all_messages)
             if msg_count > 0 and msg_count % 10 == 0:
-                from src.worker.tasks import summarize_session_history
-                summarize_session_history.delay(session_id=str(session_id))
+                dispatch_summary_check(session_id=session_id)
 
     async def semantic_search(self, query: SearchQuery):
         from src.worker.chat_tasks import embed_query

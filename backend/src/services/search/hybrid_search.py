@@ -262,7 +262,8 @@ class HybridSearchService:
         """Run Qdrant semantic search using direct client (no LlamaIndex)."""
         try:
             from src.core.qdrant_setup import get_qdrant_client
-            from src.worker.chat_tasks import _build_qdrant_filter, embed_query
+            from src.worker.chat_tasks import embed_query
+            from src.worker.rag.search_helpers import _build_qdrant_filter
 
             query_vector = embed_query(query)
             qdrant = get_qdrant_client()

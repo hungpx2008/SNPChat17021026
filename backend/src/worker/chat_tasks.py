@@ -6,24 +6,41 @@ Tasks:
   - store_memory: Save long-term memory to Mem0
   - rag_document_search: RAG search across uploaded documents
   - process_feedback: Self-correction via user feedback
+  - summarize_session_history: Async session summarization
 """
+from __future__ import annotations
+
 import logging
 import os
-import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from uuid import uuid4
 
+from src.core.constants import (
+    CHAT_CHUNK_OVERLAP,
+    CHAT_CHUNK_SIZE,
+    CHAT_EMBED_TRUNCATE,
+    RAG_FEEDBACK_SIMILARITY,
+    SUMMARY_KEEP_COUNT,
+    SUMMARY_TRIM_TOKENS,
+)
+
 from .celery_app import celery_app
+from .rag.context import _gather_unified_context
+from .rag.search_helpers import (
+    _build_hybrid_context_and_citations,
+    _run_hybrid_search,
+    _save_rag_error,
+    _save_rag_result,
+)
+from .rag.synthesis import (
+    _build_fallback_answer,
+    _format_citations_footer,
+    _sanitize_generated_answer,
+    _synthesize_with_llm,
+)
 
 logger = logging.getLogger(__name__)
-
-BACKEND_INTERNAL_URL = os.getenv("BACKEND_INTERNAL_URL", "http://backend:8000")
-# Mem0 is now local (no HTTP) — see src.core.mem0_local
-
-# Minimum cosine similarity score for a retrieved chunk to be included in RAG context.
-# Chunks below this threshold are discarded even if they are "top-k".
-RAG_SCORE_THRESHOLD = float(os.getenv("RAG_SCORE_THRESHOLD", "0.35"))
 
 # ---------------------------------------------------------------------------
 # Module-level singleton for the HuggingFace embedding model used in retrieval.
@@ -76,7 +93,7 @@ def process_chat_response(
         from .helpers import _smart_chunk
 
         # 1. Chunk text
-        chunks = _smart_chunk(content, chunk_size=512, overlap=50)
+        chunks = _smart_chunk(content, chunk_size=CHAT_CHUNK_SIZE, overlap=CHAT_CHUNK_OVERLAP)
         if not chunks:
             return {"status": "ok", "message_id": message_id, "chunks": 0}
 
@@ -151,595 +168,6 @@ def store_memory(
 
 
 # ---------------------------------------------------------------------------
-# RAG helper functions (extracted to reduce cognitive complexity)
-# ---------------------------------------------------------------------------
-
-def _build_qdrant_filter(user_id: str | None, department: str | None):
-    """Build Qdrant security + quality filter for RAG search.
-
-    Access control (OR):
-      - chunks owned by this user_id, OR
-      - public chunks belonging to this department
-
-    Quality gate (must NOT):
-      - exclude any chunk marked quality=low via negative feedback
-    """
-    from qdrant_client.models import Filter, FieldCondition, MatchValue, IsEmptyCondition, IsNullCondition
-
-    # Access control: user's own chunks OR department-public chunks
-    should_conditions = []
-    if user_id:
-        should_conditions.append(
-            FieldCondition(key="user_id", match=MatchValue(value=user_id))
-        )
-    if department:
-        should_conditions.append(Filter(must=[
-            FieldCondition(key="department", match=MatchValue(value=department)),
-            FieldCondition(key="is_public", match=MatchValue(value=True)),
-        ]))
-
-    # Quality gate: exclude chunks explicitly marked as low quality via feedback
-    must_not_conditions = [
-        FieldCondition(key="quality", match=MatchValue(value="low")),
-    ]
-
-    if should_conditions:
-        return Filter(
-            should=should_conditions,
-            must_not=must_not_conditions,
-        )
-    # No access constraints — only apply quality filter
-    return Filter(must_not=must_not_conditions)
-
-
-def _clean_snippet_text(text: str) -> str:
-    """Sanitize raw snippet text before sending to LLM.
-
-    Handles:
-    - Raw HTML tags from Docling table export (<td>, <tr>, <table>, etc.)
-    - Windows line endings (\r\n) → Unix (\n)
-    - Tab characters → space separator
-    - Lines containing ONLY numbers/prices scattered across (table debris) → joined with context
-    - Stray whitespace / redundant blank lines
-    """
-    # 0. Normalize Windows line endings
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-
-    # 1. Remove HTML tags
-    text = re.sub(r"<[^>]+>", "", text)
-
-    # 2. Convert tabs to space (prevent tab-split confusion)
-    text = text.replace("\t", " ")
-
-    # 3. Collapse multiple spaces to single space (per line)
-    lines = text.splitlines()
-    cleaned_lines = []
-    for line in lines:
-        cleaned_lines.append(re.sub(r"  +", " ", line).strip())
-    text = "\n".join(cleaned_lines)
-
-    # 4. Collapse 3+ blank lines → single blank line
-    text = re.sub(r"\n{3,}", "\n\n", text)
-
-    # 5. Remove lines that are purely whitespace
-    text = "\n".join(ln for ln in text.splitlines() if ln.strip())
-
-    return text.strip()
-
-
-
-def _fetch_mem0_memories(question: str, user_id: str) -> list[str]:
-    """Fetch long-term memories from Mem0 (local, no HTTP)."""
-    try:
-        from src.core.mem0_local import search_memories
-
-        result = search_memories(query=question, user_id=user_id, limit=5)
-        results = result.get("results") or result if isinstance(result, list) else []
-        if isinstance(result, dict):
-            results = result.get("results", [])
-        return [
-            item.get("text") or item.get("memory") or ""
-            for item in results
-            if item.get("text") or item.get("memory")
-        ]
-    except Exception as e:
-        logger.warning(f"[RAG] Mem0 long-term fetch failed: {e}")
-        return []
-
-
-def _fetch_session_history(session_id: str) -> tuple[str, list[dict]]:
-    """Fetch session summary and all messages from DB.
-
-    Returns (summary_text, all_messages) where messages are in chronological order.
-    """
-    from src.core.database_pool import db_pool
-
-    # Fetch session summary
-    summary_text = ""
-    meta_rows = db_pool.execute_query_fetchall(
-        "SELECT metadata FROM chat_sessions WHERE id = :sid",
-        {"sid": session_id},
-    )
-    if meta_rows and meta_rows[0][0]:
-        meta = meta_rows[0][0]
-        if isinstance(meta, dict) and meta.get("summary"):
-            summary_text = str(meta["summary"])
-
-    # Fetch ALL messages (ContextBuilder handles budget fitting)
-    msg_rows = db_pool.execute_query_fetchall(
-        "SELECT role, content FROM chat_messages "
-        "WHERE session_id = :sid ORDER BY created_at ASC",
-        {"sid": session_id},
-    )
-    all_messages = [
-        {"role": r[0], "content": r[1]}
-        for r in msg_rows
-        if r[0] is not None
-    ]
-    return summary_text, all_messages
-
-
-def _build_context_with_builder(
-    memories: list[str], summary_text: str, all_messages: list[dict],
-    department: str | None = None,
-) -> dict[str, str]:
-    """Use ContextBuilder + SystemPromptBuilder for dynamic budget allocation."""
-    from src.services.context_builder import ContextBuilder, SystemPromptBuilder
-
-    llm_model = os.getenv("LLM_MODEL", "openai/gpt-4o-mini")
-    prompt_builder = SystemPromptBuilder()
-    system_prompt = prompt_builder.build(
-        mode="rag",
-        memories=memories,
-        session_summary=summary_text,
-        department=department,
-    )
-    builder = ContextBuilder(model=llm_model)
-    ctx = builder.build_context(
-        system_prompt=system_prompt,
-        memories=memories,
-        summary=summary_text,
-        messages=all_messages,
-        rag_context="",  # RAG context is added separately in _synthesize_with_llm
-    )
-    return {
-        "long_term_block": ctx.long_term_block,
-        "summary_block": ctx.summary_block,
-        "recent_block": ctx.recent_block,
-        "system_prompt": system_prompt,
-    }
-
-
-def _build_context_fallback(
-    memories: list[str], summary_text: str, all_messages: list[dict],
-) -> dict[str, str]:
-    """Fallback: return raw data without budget optimization (legacy LIMIT 6 behavior)."""
-    long_term_block = "\n".join(f"- {m}" for m in memories) if memories else ""
-    recent_block = ""
-    if all_messages:
-        recent = all_messages[-6:]
-        recent_block = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in recent)
-    return {
-        "long_term_block": long_term_block,
-        "summary_block": summary_text,
-        "recent_block": recent_block,
-    }
-
-
-def _gather_unified_context(
-    question: str,
-    session_id: str,
-    user_id: str | None,
-    department: str | None = None,
-) -> dict[str, str]:
-    """Collect long-term memory, session summary, and recent chat for unified prompting.
-
-    Uses ContextBuilder + SystemPromptBuilder for dynamic budget-based context
-    assembly. Falls back to legacy behavior on import errors.
-
-    Returns dict with keys: long_term_block, summary_block, recent_block, system_prompt.
-    """
-    memories = _fetch_mem0_memories(question, user_id) if user_id else []
-
-    try:
-        summary_text, all_messages = _fetch_session_history(session_id)
-    except Exception as e:
-        logger.warning(f"[RAG] Recent history fetch failed: {e}")
-        summary_text, all_messages = "", []
-
-    try:
-        return _build_context_with_builder(memories, summary_text, all_messages, department)
-    except Exception as e:
-        logger.warning(f"[RAG] ContextBuilder failed, using fallback: {e}")
-        result = _build_context_fallback(memories, summary_text, all_messages)
-        result["system_prompt"] = _RAG_SYSTEM_PROMPT  # fallback uses static prompt
-        return result
-
-
-_RAG_SYSTEM_PROMPT = (
-    "Bạn là chuyên viên tư vấn nhiệt tình, chuyên nghiệp của ChatSNP (Tân Cảng Sài Gòn).\n"
-    "Nhiệm vụ của bạn là dựa vào tài liệu được cung cấp để giải đáp chính xác, rõ ràng cho khách hàng.\n"
-    "YÊU CẦU ĐỊNH DẠNG:\n"
-    "- Trả lời tự nhiên, lịch sự, đầy đủ ý nhưng không lan man.\n"
-    "- Bạn ĐƯỢC PHÉP dùng bullet points, xuống dòng để trình bày rõ ràng nếu thông tin dài.\n"
-    "- Khi context chứa dữ liệu dạng bảng (tbl_cell, row_key, col_key), BẮT BUỘC phải trình bày lại thành bảng Markdown chuẩn.\n"
-    "  Ví dụ cú pháp bảng Markdown:\n"
-    "  | Loại container | 20' | 40' | 45' |\n"
-    "  |---|---|---|---|\n"
-    "  | Hàng khô | 1.230.000 | 1.835.000 | 1.835.000 |\n"
-    "- Giữ nguyên đơn vị tiền tệ gốc (VNĐ, USD). Không làm tròn, không đổi đơn vị.\n"
-    "- Trích dẫn nguồn bằng cách thêm [1], [2]... vào cuối câu hoặc cuối đoạn lấy thông tin.\n"
-    "- Tuyệt đối không bịa số liệu. Nếu tài liệu không đề cập, hãy nói rõ là chưa có thông tin và mời khách liên hệ hotline 1800 1188.\n"
-)
-
-
-def _synthesize_with_llm(
-    question: str,
-    context_text: str,
-    *,
-    long_term_block: str = "",
-    summary_block: str = "",
-    recent_block: str = "",
-    system_prompt: str = "",
-) -> str:
-    """Call LLM via OpenRouter to synthesize a clean answer.
-
-    Parameters
-    ----------
-    system_prompt : str
-        Dynamic system prompt from SystemPromptBuilder. Falls back to
-        static _RAG_SYSTEM_PROMPT if empty.
-    """
-    openai_key = os.getenv("OPENAI_API_KEY", "")
-    openai_base = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
-    # gpt-5-nano là reasoning model — trả content="" → dùng gpt-4o-mini làm default
-    llm_model = os.getenv("LLM_MODEL", "openai/gpt-4o-mini")
-
-    # Use dynamic prompt if provided, otherwise fall back to static
-    effective_prompt = system_prompt or _RAG_SYSTEM_PROMPT
-
-    unified_context_parts = []
-    if long_term_block:
-        unified_context_parts.append("### Long-term Memory\n" + long_term_block)
-    if summary_block:
-        unified_context_parts.append("### Tóm tắt hội thoại\n" + summary_block)
-    if recent_block:
-        unified_context_parts.append("### Hội thoại gần đây\n" + recent_block)
-    unified_context_parts.append("### Đoạn trích tài liệu (đã đánh số)\n" + context_text)
-    unified_context = "\n\n".join(unified_context_parts)
-
-    user_prompt = (
-        f"Câu hỏi người dùng: {question}\n\n"
-        "Context:\n\n"
-        f"{unified_context}\n\n"
-        "Yêu cầu: Hãy phân tích kỹ Context để trả lời đầy đủ, chi tiết (được phép định dạng bảng, bullet nếu cần thiết)."
-    )
-    from src.core.http_client import get_http_client
-    http_client = get_http_client()
-
-    try:
-        resp = http_client.post(
-            f"{openai_base.rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {openai_key}", "Content-Type": "application/json"},
-            json={
-                "model": llm_model,
-                "messages": [
-                    {"role": "system", "content": effective_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": 0.3,
-                "max_tokens": 1500,
-            },
-        )
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
-        if not content or not content.strip():
-            # Reasoning models (gpt-5-nano, o1, etc.) đôi khi trả content="" — raise để trigger fallback
-            raise ValueError(
-                f"LLM returned empty content (model={llm_model}). "
-                "Likely a reasoning-only model. Set LLM_MODEL=openai/gpt-4o-mini in .env"
-            )
-        return content.strip()
-    except Exception as e:
-        logger.error(f"[LLM] Synthesis failed: {e}")
-        raise
-
-
-def _strip_markdown_tables(text: str) -> str:
-    """Remove markdown table blocks from model output."""
-    lines = text.splitlines()
-    out: list[str] = []
-    i = 0
-
-    while i < len(lines):
-        line = lines[i]
-        is_table_row = bool(re.match(r"^\s*\|.*\|\s*$", line))
-        is_sep_row = (
-            i + 1 < len(lines)
-            and bool(re.match(r"^\s*\|(?:\s*:?-+:?\s*\|)+\s*$", lines[i + 1]))
-        )
-
-        if is_table_row and is_sep_row:
-            i += 2
-            while i < len(lines) and re.match(r"^\s*\|.*\|\s*$", lines[i]):
-                i += 1
-            continue
-
-        # Drop broken pipe-heavy lines (often malformed table debris)
-        if line.count("|") >= 3 and not re.search(r"[A-Za-zÀ-ỹ0-9]", line):
-            i += 1
-            continue
-
-        out.append(line)
-        i += 1
-
-    return "\n".join(out)
-
-
-def _split_sentences_vi(text: str) -> list[str]:
-    """
-    Split Vietnamese text into sentences without breaking on:
-    - Decimal numbers: "1.200.000 VNĐ"
-    - Common abbreviations: "TP.", "Dr.", "No.", "ST.", v.v.
-    - Ellipsis: "..."
-
-    Strategy: only split on [.!?] that is followed by whitespace AND an uppercase letter
-    or a Vietnamese uppercase (À-Ỹ). This avoids splitting "50.000 VNĐ. Đây là..."
-    vs keeping "Dr. Nguyễn" intact.
-    """
-    # Protect known patterns from being split
-    # 1. Replace "..." with a placeholder
-    text = text.replace("...", "⟨ellipsis⟩")
-    # 2. Replace decimal separators: digit.digit → protect
-    text = re.sub(r"(\d)\.(\d)", r"\1⟨dot⟩\2", text)
-    # 3. Replace common abbreviations: word of 1-3 uppercase letters followed by dot
-    text = re.sub(r"\b([A-ZĐÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚĂẮẶẦẨẪẤẬẺẼẸỀẾỆỈỊỎỌỒỐỔỖỘỚỜỞỠỢỤỦỪỨỬỮỰỲỴỶỸ]{1,3})\.", r"\1⟨abbr⟩", text)
-
-    # Split only on sentence-ending punctuation followed by space + uppercase start
-    sentences = re.split(r'(?<=[.!?])\s+(?=[A-ZĐÀÁÂÃÈÉÊÌÍÒÓÔÕÙÚĂẮẶẦẨẪẤẬẺẼẸỀẾỆỈỊỎỌỒỐỔỖỘỚỜỞỠỢỤỦỪỨỬỮỰỲỴỶỸ])', text)
-
-    # Restore placeholders
-    restored = []
-    for s in sentences:
-        s = s.replace("⟨ellipsis⟩", "...").replace("⟨dot⟩", ".").replace("⟨abbr⟩", ".")
-        if s.strip():
-            restored.append(s.strip())
-    return restored
-
-
-def _sanitize_generated_answer(text: str) -> str:
-    """Normalize model output into concise, clean prose."""
-    clean = text or ""
-
-    # Remove model-generated citation footer; backend will append canonical footer later.
-    clean = re.sub(
-        r"(?ms)^---\s*\n📚\s*\*\*Nguồn tham khảo:\*\*[\s\S]*$",
-        "",
-        clean,
-    ).strip()
-
-    # Remove malformed citation list lines generated by model.
-    clean = re.sub(r"(?m)^\s*-\s*\*\*\[[^\]]+\]\*\*.*$", "", clean)
-
-    # Fix inline malformed citations like [ 1 VNĐ ] -> [1]
-    clean = re.sub(r"\[\s*(\d+)\s*(?:VNĐ|VND)\s*\]", r"[\1]", clean, flags=re.IGNORECASE)
-
-    # Normalize excess whitespace.
-    clean = re.sub(r"\n{4,}", "\n\n", clean)
-    clean = clean.strip()
-
-    # Trim common dangling endings from truncated generations.
-    clean = re.sub(r"(?:\s+(?:và|hoặc|cho|tại|với|là|:))\s*$", "", clean, flags=re.IGNORECASE)
-
-    return clean
-
-
-def _build_fallback_answer(context_blocks: list[str]) -> str:
-    """Build a clean fallback when LLM synthesis fails."""
-    if not context_blocks:
-        return "Chưa tìm thấy dữ liệu phù hợp trong tài liệu hiện có; bạn vui lòng nêu rõ hơn điều kiện cần tra cứu."
-
-    clean = re.sub(r'^\[\d+\]\s*', '', context_blocks[0]).strip()
-    return f"Thông tin gần nhất trong tài liệu là: {clean}"
-
-
-def _format_citations_footer(citations: list[dict[str, Any]]) -> str:
-    """Format citations into a clean markdown footer."""
-    if not citations:
-        return ""
-
-    cite_lines = ["---", "📚 **Nguồn tham khảo:**"]
-    for c in citations:
-        # Sanitize page: chỉ chấp nhận số hoặc "?"
-        raw_page = c.get("page")
-        try:
-            page_str = str(int(raw_page)) if raw_page is not None else "?"
-        except (ValueError, TypeError):
-            page_str = "?"
-
-        # Sanitize score: chỉ chấp nhận float hợp lệ 0–1
-        raw_score = c.get("score")
-        try:
-            score_val = float(raw_score)
-            score_str = f" — độ liên quan: {score_val:.3f}" if 0 < score_val <= 1 else ""
-        except (ValueError, TypeError):
-            score_str = ""
-
-        headings = c.get("headings", [])
-        headings_str = f" | mục: {headings[-1]}" if headings else ""
-
-        cite_lines.append(
-            f"- **[{c['index']}]** {c['file']} (Trang {page_str}){headings_str}{score_str}"
-        )
-
-    return "\n" + "\n".join(cite_lines)
-
-
-# ---------------------------------------------------------------------------
-# Hybrid Search helpers
-# ---------------------------------------------------------------------------
-
-
-def _fallback_semantic_search(
-    question: str,
-    user_id: str | None,
-    department: str | None,
-) -> list:
-    """Pure semantic fallback when hybrid search returns no results.
-
-    Uses direct Qdrant client instead of LlamaIndex wrapper.
-    Returns a list of SearchResult objects for compatibility.
-    """
-    from src.core.qdrant_setup import get_qdrant_client
-    from src.services.search.hybrid_search import SearchResult
-
-    query_vector = embed_query(question)
-    qdrant = get_qdrant_client()
-    qdrant_filter = _build_qdrant_filter(user_id, department)
-
-    points = qdrant.query_points(
-        collection_name="port_knowledge",
-        query=query_vector,
-        query_filter=qdrant_filter,
-        limit=5,
-    ).points
-
-    results = []
-    for point in points:
-        score = getattr(point, "score", 0.0) or 0.0
-        if score < RAG_SCORE_THRESHOLD:
-            continue
-        payload = point.payload or {}
-        content = payload.get("content", "")
-        results.append(SearchResult(
-            doc_id=str(point.id) if point.id else "",
-            title=payload.get("source_file", ""),
-            content=content,
-            tags=",".join(payload.get("headings", [])),
-            score=score,
-            semantic_score=score,
-            source="semantic",
-            metadata=payload,
-        ))
-    return results
-
-
-def _extract_hybrid_meta(result) -> dict[str, Any]:
-    """Extract normalized metadata from a hybrid SearchResult."""
-    meta = result.metadata or {}
-    fname = result.title or meta.get("source_file", "Không rõ")
-
-    raw_page = meta.get("page_number") or meta.get("page", "?")
-    try:
-        page_display = str(int(raw_page))
-    except (ValueError, TypeError):
-        page_display = "?"
-
-    headings = meta.get("headings", [])
-    if isinstance(result.tags, str) and result.tags and not headings:
-        headings = [t.strip() for t in result.tags.split(",") if t.strip()]
-
-    return {
-        "fname": fname,
-        "page_display": page_display,
-        "headings": headings,
-        "doc_id": meta.get("document_id", ""),
-    }
-
-
-def _maybe_add_image_hint(snippet: str, fname: str, doc_id: str) -> str:
-    """Append image download hint if the source is an image file."""
-    ext = fname.lower().rsplit(".", 1)[-1] if "." in fname else ""
-    if ext in ("jpg", "jpeg", "png") and doc_id:
-        snippet += f"\n[LƯU Ý QUAN TRỌNG: Link Tải ảnh gốc là `/api/upload/{doc_id}/download`]"
-    return snippet
-
-
-def _resolve_parent_content(hybrid_results: list) -> list:
-    """Replace child chunk content with parent content when parent_id is present.
-
-    For backward compatibility, results without parent_id keep their original content.
-    Multiple children pointing to the same parent are deduped — only the first is kept.
-    """
-    from src.services.parent_chunk_store import fetch_parent_content
-
-    # Collect unique parent_ids
-    parent_ids = list({
-        r.parent_id for r in hybrid_results
-        if hasattr(r, "parent_id") and r.parent_id
-    })
-
-    if not parent_ids:
-        return hybrid_results  # No parent-child chunks, use as-is
-
-    # Fetch parent content from PostgreSQL
-    parent_map = fetch_parent_content(parent_ids)
-
-    # Replace child content with parent content, dedup by parent_id
-    seen_parents: set[str] = set()
-    resolved: list = []
-
-    for result in hybrid_results:
-        pid = getattr(result, "parent_id", "") or ""
-        if pid and pid in parent_map and parent_map[pid]:
-            if pid in seen_parents:
-                continue  # Skip duplicate parent
-            seen_parents.add(pid)
-            # Replace content with parent's full text
-            result.content = parent_map[pid]
-        resolved.append(result)
-
-    return resolved
-
-
-def _build_hybrid_context_and_citations(
-    hybrid_results: list,
-) -> tuple[list[dict[str, Any]], list[str]]:
-    """Build context blocks and citations from hybrid search results."""
-    citations: list[dict[str, Any]] = []
-    context_blocks: list[str] = []
-    seen_citations: set[str] = set()
-    seen_content: set[int] = set()
-
-    for result in hybrid_results:
-        snippet = (result.content or "").strip()
-        if not snippet:
-            continue
-
-        content_hash = hash(snippet[:200])
-        if content_hash in seen_content:
-            continue
-        seen_content.add(content_hash)
-
-        m = _extract_hybrid_meta(result)
-        snippet = _maybe_add_image_hint(snippet, m["fname"], m["doc_id"])
-
-        heading_key = "|".join(str(h) for h in m["headings"][:2]) if m["headings"] else ""
-        cite_key = f"{m['fname']}|{m['page_display']}|{heading_key}"
-
-        if cite_key not in seen_citations:
-            seen_citations.add(cite_key)
-            citations.append({
-                "index": len(citations) + 1,
-                "file": m["fname"],
-                "page": m["page_display"],
-                "headings": m["headings"],
-                "score": result.score,
-                "doc_id": m["doc_id"],
-                "source": result.source,
-            })
-
-        cite_idx = next(
-            (c["index"] for c in citations
-             if c.get("file") == m["fname"] and c.get("page") == m["page_display"]),
-            len(citations),
-        )
-        context_blocks.append(f"[{cite_idx}] {snippet}")
-
-    return citations, context_blocks
-
-
-# ---------------------------------------------------------------------------
 # RAG Celery task
 # ---------------------------------------------------------------------------
 
@@ -752,104 +180,29 @@ def rag_document_search(
     department: str | None = None,
     target_message_id: str | None = None,
 ) -> dict[str, Any]:
-    """
-    RAG Document Search — find and synthesize answers from uploaded documents.
-    """
+    """RAG Document Search — find and synthesize answers from uploaded documents."""
     logger.info(f"[RAG] Search for session {session_id}: {question[:50]}...")
     try:
-        # ── Query Enhancement: classify and enhance before search ──
-        from src.services.search.query_enhancer import QueryEnhancer, QueryStrategy
-        from src.services.search.hybrid_search import HybridSearchService
-
-        enhancer = QueryEnhancer()
-        enhanced = enhancer.enhance(question)
-        logger.info(
-            f"[RAG] Query strategy: {enhanced.strategy.value}, "
-            f"sub-queries: {len(enhanced.queries)}"
+        # 1. Search: enhance query → cache → hybrid → fallback → parent resolve
+        hybrid_results, enhanced = _run_hybrid_search(
+            question, user_id, department, embed_fn=embed_query,
         )
-        if enhanced.hyde_output:
-            logger.info(f"[RAG] HyDE output: {enhanced.hyde_output[:100]}...")
 
-        # ── Semantic Cache: check for cached search results ──
-        cache_hit = False
-        hybrid_results = []
-        try:
-            import asyncio
-            from src.services.search.semantic_cache import SemanticCache
-            _cache = SemanticCache()
-            _loop = asyncio.new_event_loop()
-            cached = _loop.run_until_complete(_cache.get(question, user_id))
-            _loop.close()
-            if cached is not None:
-                from src.services.search.hybrid_search import SearchResult
-                hybrid_results = [
-                    SearchResult(**item) for item in cached
-                ]
-                cache_hit = True
-                logger.info(
-                    f"[RAG] Semantic cache HIT: {len(hybrid_results)} results"
-                )
-        except Exception as e:
-            logger.warning(f"[RAG] Semantic cache lookup failed: {e}")
-
-        # ── Hybrid Search: only if cache missed ──
-        if not cache_hit:
-            hybrid = HybridSearchService()
-            hybrid_results = hybrid.search(
-                query=enhanced.queries if len(enhanced.queries) > 1 else enhanced.queries[0],
-                user_id=user_id,
-                department=department,
-                limit=5,
-                score_threshold=RAG_SCORE_THRESHOLD,
-            )
-
-            # Store results in cache for next time
-            if hybrid_results:
-                try:
-                    import asyncio
-                    from src.services.search.semantic_cache import SemanticCache
-                    _cache = SemanticCache()
-                    serialized = [
-                        {
-                            "doc_id": r.doc_id, "title": r.title,
-                            "content": r.content, "tags": r.tags,
-                            "score": r.score, "semantic_score": r.semantic_score,
-                            "lexical_score": r.lexical_score,
-                            "rrf_score": r.rrf_score, "boost_score": r.boost_score,
-                            "source": r.source, "metadata": r.metadata,
-                            "parent_id": r.parent_id,
-                        }
-                        for r in hybrid_results
-                    ]
-                    _loop = asyncio.new_event_loop()
-                    _loop.run_until_complete(_cache.put(question, serialized, user_id))
-                    _loop.close()
-                    logger.info(f"[RAG] Cached {len(serialized)} results for future queries")
-                except Exception as e:
-                    logger.warning(f"[RAG] Semantic cache store failed: {e}")
-
-        # ── Fallback: if hybrid returns nothing, try pure semantic ──
-        if not hybrid_results:
-            logger.info(f"[RAG] Hybrid returned 0 results, falling back to pure semantic")
-            hybrid_results = _fallback_semantic_search(question, user_id, department)
-
-        # ── Before building context, resolve parent chunks ──
-        hybrid_results = _resolve_parent_content(hybrid_results)
-
-        # ── Build context + citations from hybrid results ──
+        # 2. Build context + citations from search results
         citations, context_blocks = _build_hybrid_context_and_citations(hybrid_results)
         context_text = "\n\n---\n\n".join(context_blocks).strip()
         logger.info(f"[RAG CONTEXT (Hybrid)]:\n{context_text}\n{'='*50}")
 
-        # 4. Synthesize via LLM (with fallback)
+        # 3. Synthesize via LLM (with fallback)
         result_text = ""
         llm_error: str | None = None
         if context_text:
             try:
-                unified_ctx = _gather_unified_context(question, session_id, user_id, department)
+                unified_ctx = _gather_unified_context(
+                    question, session_id, user_id, department,
+                )
                 result_text = _synthesize_with_llm(
-                    question,
-                    context_text,
+                    question, context_text,
                     long_term_block=unified_ctx.get("long_term_block", ""),
                     summary_block=unified_ctx.get("summary_block", ""),
                     recent_block=unified_ctx.get("recent_block", ""),
@@ -857,56 +210,16 @@ def rag_document_search(
                 )
             except Exception as e:
                 llm_error = str(e)
-                logger.error(
-                    f"[RAG] LLM synthesis FAILED for session={session_id} "
-                    f"model={os.getenv('LLM_MODEL','?')} "
-                    f"base={os.getenv('OPENAI_BASE_URL','?')} "
-                    f"error={e}"
-                )
-        if not result_text:
-            if llm_error:
-                result_text = _build_fallback_answer([])
-            else:
-                result_text = _build_fallback_answer(context_blocks)
+                logger.error(f"[RAG] LLM synthesis FAILED: {e}")
 
-        logger.info(f"[RAG RAW LLM OUTPUT]:\n{result_text}\n{'='*50}")
+        if not result_text:
+            result_text = _build_fallback_answer([] if llm_error else context_blocks)
+
         result_text = _sanitize_generated_answer(result_text)
-        logger.info(f"[RAG AFTER SANITIZE]:\n{result_text}\n{'='*50}")
         result_text += _format_citations_footer(citations)
 
-        # 5. Save via Backend API
-        from src.core.http_client import get_http_client
-        http_client = get_http_client(timeout=10.0)
-        if target_message_id:
-            # Update placeholder message created by regenerate
-            resp = http_client.patch(
-                f"{BACKEND_INTERNAL_URL}/messages/{target_message_id}/content",
-                json={"content": result_text},
-            )
-        else:
-            resp = http_client.post(
-                f"{BACKEND_INTERNAL_URL}/sessions/{session_id}/messages",
-                json={"content": result_text, "role": "assistant"},
-            )
-        resp.raise_for_status()
-
-        # 6. Store retrieved chunk IDs in message metadata for accurate feedback
-        try:
-            msg_id = target_message_id or resp.json().get("id")
-            if msg_id and hybrid_results:
-                chunk_ids = [r.doc_id for r in hybrid_results if r.doc_id]
-                if chunk_ids:
-                    metadata_patch = {"rag_chunk_ids": chunk_ids}
-                    # Store query enhancement info for debugging/analytics
-                    metadata_patch["query_strategy"] = enhanced.strategy.value
-                    if enhanced.strategy == QueryStrategy.DECOMPOSED:
-                        metadata_patch["sub_queries"] = enhanced.queries
-                    http_client.patch(
-                        f"{BACKEND_INTERNAL_URL}/messages/{msg_id}/metadata",
-                        json=metadata_patch,
-                    )
-        except Exception as e:
-            logger.warning(f"[RAG] Could not store chunk_ids in message metadata: {e}")
+        # 4. Save answer + metadata via Backend API
+        _save_rag_result(result_text, session_id, target_message_id, hybrid_results, enhanced)
 
         logger.info(f"[RAG] Saved answer for session {session_id}")
         from .helpers import publish_task_complete
@@ -915,21 +228,7 @@ def rag_document_search(
 
     except Exception as exc:
         logger.exception(f"Error in RAG document search: {exc}")
-        try:
-            from src.core.http_client import get_http_client
-            error_content = "Xin lỗi, hệ thống gặp sự cố khi tìm kiếm tài liệu. Vui lòng thử lại sau ạ."
-            if target_message_id:
-                get_http_client(timeout=10.0).patch(
-                    f"{BACKEND_INTERNAL_URL}/messages/{target_message_id}/content",
-                    json={"content": error_content},
-                )
-            else:
-                get_http_client(timeout=10.0).post(
-                    f"{BACKEND_INTERNAL_URL}/sessions/{session_id}/messages",
-                    json={"content": error_content, "role": "assistant"},
-                )
-        except Exception:
-            pass
+        _save_rag_error(session_id, target_message_id)
         from .helpers import publish_task_complete
         publish_task_complete(session_id)
         return {"status": "error", "message": str(exc)}
@@ -984,14 +283,13 @@ def process_feedback(
                 points=stored_chunk_ids,
             )
             downgraded = len(stored_chunk_ids)
-            logger.info(f"[feedback] Marked {downgraded} exact chunk(s) as low_quality via stored IDs")
+            logger.info(
+                f"[feedback] Marked {downgraded} exact chunk(s) as low_quality via stored IDs"
+            )
 
         else:
             # Strategy B: fallback — embed the question (not the answer) to find source chunks.
-            # Note: we embed msg_content (the bot answer); a better proxy would be the user
-            # question, but we don't have it here without a DB join. This is still better
-            # than the previous approach of embedding the answer with wrong intent.
-            query_vector = embed_query(msg_content[:500])
+            query_vector = embed_query(msg_content[:CHAT_EMBED_TRUNCATE])
 
             matches = qdrant.query_points(
                 collection_name="port_knowledge",
@@ -1000,16 +298,24 @@ def process_feedback(
             ).points
 
             for point in matches:
-                if point.score and point.score > 0.7:
+                if point.score and point.score > RAG_FEEDBACK_SIMILARITY:
                     qdrant.set_payload(
                         collection_name="port_knowledge",
                         payload={"quality": "low", "dislike_reason": reason or "unknown"},
                         points=[point.id],
                     )
                     downgraded += 1
-                    logger.info(f"[feedback] Marked vector {point.id} as low_quality (fallback similarity)")
+                    logger.info(
+                        f"[feedback] Marked vector {point.id} as low_quality "
+                        "(fallback similarity)"
+                    )
 
-        return {"status": "ok", "action": "vectors_downgraded", "message_id": message_id, "downgraded": downgraded}
+        return {
+            "status": "ok",
+            "action": "vectors_downgraded",
+            "message_id": message_id,
+            "downgraded": downgraded,
+        }
 
     except Exception as exc:
         logger.exception(f"Error processing feedback: {exc}")
@@ -1024,8 +330,8 @@ def process_feedback(
 def summarize_session_history(
     self,
     session_id: str,
-    keep_count: int = 12,
-    trim_tokens: int = 6_000,
+    keep_count: int = SUMMARY_KEEP_COUNT,
+    trim_tokens: int = SUMMARY_TRIM_TOKENS,
 ) -> dict[str, Any]:
     """
     Tóm tắt bất đồng bộ lịch sử hội thoại (Smart Summarization).
@@ -1081,8 +387,8 @@ def summarize_session_history(
 
         # 4. Call LLM with improved S2B-ported prompt
         openai_key = os.getenv("OPENAI_API_KEY", "")
-        openai_base = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
-        llm_model = os.getenv("LLM_MODEL", "openai/gpt-5-nano")
+        openai_base = os.getenv("OPENAI_BASE_URL", "https://ezaiapi.com")
+        llm_model = os.getenv("LLM_MODEL_LIGHT", "gpt-5.3-codex")
 
         from src.utils.summarization import SUMMARY_PROMPT_VI
         from src.core.http_client import get_http_client

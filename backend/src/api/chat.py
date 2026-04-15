@@ -29,6 +29,11 @@ from src.services.conversation_tree import ConversationTree
 from src.api.deps import get_db_session, get_session_or_404
 from src.core.redis_client import get_redis
 from src.core.cors import build_cors_headers
+from src.services.task_dispatcher import (
+    dispatch_chat_embed,
+    dispatch_rag_search,
+    dispatch_sql_query,
+)
 
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -135,10 +140,9 @@ async def edit_message(
     await db.commit()
 
     # Dispatch chunk+embed for the new user message
-    from src.worker.tasks import process_chat_response
-    process_chat_response.delay(
-        session_id=str(session_id),
-        message_id=str(new_msg.id),
+    dispatch_chat_embed(
+        session_id=session_id,
+        message_id=new_msg.id,
         content=new_msg.content,
         role=new_msg.role,
         user_id=db_session.user_id,
@@ -199,27 +203,24 @@ async def regenerate_message(
 
     # Dispatch appropriate Celery task
     if mode == "rag":
-        from src.worker.tasks import rag_document_search
-        rag_document_search.delay(
+        dispatch_rag_search(
             question=user_question,
-            session_id=str(session_id),
+            session_id=session_id,
             user_id=db_session.user_id,
             department=db_session.department,
-            target_message_id=str(placeholder.id),
+            target_message_id=placeholder.id,
         )
     elif mode == "sql":
-        from src.worker.tasks import run_sql_query
-        run_sql_query.delay(
+        dispatch_sql_query(
             question=user_question,
-            session_id=str(session_id),
+            session_id=session_id,
             user_id=db_session.user_id,
-            target_message_id=str(placeholder.id),
+            target_message_id=placeholder.id,
         )
     else:
-        from src.worker.tasks import process_chat_response
-        process_chat_response.delay(
-            session_id=str(session_id),
-            message_id=str(placeholder.id),
+        dispatch_chat_embed(
+            session_id=session_id,
+            message_id=placeholder.id,
             content=user_question,
             role="user",
             user_id=db_session.user_id,
