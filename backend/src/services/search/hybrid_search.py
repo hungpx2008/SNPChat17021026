@@ -283,7 +283,7 @@ class HybridSearchService:
                     continue
 
                 payload = point.payload or {}
-                content = payload.get("content", "")
+                content = payload.get("text", "")
 
                 results.append({
                     "doc_id": str(point.id) if point.id else "",

@@ -10,9 +10,11 @@ Tasks:
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor
+import sqlite3
+from threading import Lock
 from typing import Any
 from uuid import uuid4
 
@@ -52,18 +54,21 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _hf_embed_model = None
 _hf_embed_model_name: str | None = None
+_hf_embed_model_lock = Lock()
 
 
 def _get_hf_embed_model():
     """Return a cached SentenceTransformer instance (loaded once per Celery worker)."""
     global _hf_embed_model, _hf_embed_model_name  # noqa: PLW0603
-    model_name = os.getenv("EMBEDDING_MODEL", "thanhtantran/Vietnamese_Embedding_v2")
+    model_name = os.getenv("EMBEDDING_MODEL", "AITeamVN/Vietnamese_Embedding_v2")
     if _hf_embed_model is None or _hf_embed_model_name != model_name:
-        from sentence_transformers import SentenceTransformer
-        logger.info(f"[RAG] Loading SentenceTransformer embedding model: {model_name}")
-        _hf_embed_model = SentenceTransformer(model_name)
-        _hf_embed_model_name = model_name
-        logger.info("[RAG] Embedding model loaded and cached.")
+        with _hf_embed_model_lock:
+            if _hf_embed_model is None or _hf_embed_model_name != model_name:
+                from sentence_transformers import SentenceTransformer
+                logger.info(f"[RAG] Loading SentenceTransformer embedding model: {model_name}")
+                _hf_embed_model = SentenceTransformer(model_name)
+                _hf_embed_model_name = model_name
+                logger.info("[RAG] Embedding model loaded and cached.")
     return _hf_embed_model
 
 
@@ -71,6 +76,43 @@ def embed_query(text: str) -> list[float]:
     """Embed a single query string into a vector using the cached model."""
     model = _get_hf_embed_model()
     return model.encode(text, normalize_embeddings=True).tolist()
+
+
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    """Embed a batch of texts using one shared model instance."""
+    if not texts:
+        return []
+    model = _get_hf_embed_model()
+    return model.encode(texts, normalize_embeddings=True).tolist()
+
+
+def _load_message_llm_settings(source_message_id: str | None) -> dict[str, Any] | None:
+    """Load per-message runtime LLM settings stored by the frontend settings sheet."""
+    if not source_message_id:
+        return None
+
+    try:
+        from src.core.database_pool import db_pool
+
+        row = db_pool.execute_query_fetchone(
+            "SELECT metadata FROM chat_messages WHERE id = :msg_id",
+            {"msg_id": source_message_id},
+        )
+        if not row:
+            return None
+
+        metadata = row[0]
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata)
+
+        if isinstance(metadata, dict):
+            llm_settings = metadata.get("llm_settings")
+            if isinstance(llm_settings, dict):
+                return llm_settings
+    except Exception as exc:
+        logger.warning("[RAG] Could not load runtime llm settings: %s", exc)
+
+    return None
 
 
 # =============================================================================
@@ -101,10 +143,9 @@ def process_chat_response(
         if not chunks:
             return {"status": "ok", "message_id": message_id, "chunks": 0}
 
-        # 2. Embed each chunk locally (sentence-transformers)
+        # 2. Embed chunks in one batch to avoid duplicate model loads.
         chunk_texts = [t for t, _ in chunks]
-        with ThreadPoolExecutor(max_workers=min(len(chunk_texts), 8)) as pool:
-            vectors = list(pool.map(embed_query, chunk_texts))
+        vectors = embed_texts(chunk_texts)
 
         if any(v is None for v in vectors):
             return {"status": "warning", "message_id": message_id}
@@ -169,6 +210,11 @@ def store_memory(
         logger.info(f"[mem0] Memory stored for user {user_id}")
         return {"status": "ok", "user_id": user_id}
 
+    except sqlite3.OperationalError as exc:
+        # SQLite DB path not accessible in Docker — fail fast, don't clog queue
+        logger.warning("Mem0 SQLite unavailable (skipping): %s", exc)
+        return {"status": "skipped", "reason": "sqlite_unavailable", "user_id": user_id}
+
     except Exception as exc:  # Justified: Mem0 local lib may raise unpredictable errors
         logger.exception("Error storing memory (%s): %s", type(exc).__name__, exc)
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
@@ -186,6 +232,7 @@ def rag_document_search(
     user_id: str | None = None,
     department: str | None = None,
     target_message_id: str | None = None,
+    source_message_id: str | None = None,
 ) -> dict[str, Any]:
     """RAG Document Search — find and synthesize answers from uploaded documents."""
     logger.info(f"[RAG] Search for session {session_id}: {question[:50]}...")
@@ -194,6 +241,7 @@ def rag_document_search(
         hybrid_results, enhanced = _run_hybrid_search(
             question, user_id, department, embed_fn=embed_query,
         )
+        runtime_llm_settings = _load_message_llm_settings(source_message_id)
 
         # 2. Build context + citations from search results
         citations, context_blocks = _build_hybrid_context_and_citations(hybrid_results)
@@ -214,6 +262,7 @@ def rag_document_search(
                     summary_block=unified_ctx.get("summary_block", ""),
                     recent_block=unified_ctx.get("recent_block", ""),
                     system_prompt=unified_ctx.get("system_prompt", ""),
+                    llm_settings=runtime_llm_settings,
                 )
             except (httpx.HTTPError, KeyError, ValueError) as e:
                 llm_error = str(e)

@@ -9,6 +9,8 @@ x-common-env: &common-env
   QDRANT_HOST: qdrant
   QDRANT_PORT: 6333
   QDRANT_COLLECTION: mem0_memories
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-AITeamVN/Vietnamese_Embedding_v2}
+  EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1024}
   BACKEND_INTERNAL_URL: http://backend:8000
   PYTHONUNBUFFERED: "1"
   # Whoosh BM25 index directory (Hybrid Search)
@@ -21,10 +23,14 @@ x-common-env: &common-env
   # AI Model Configuration
   LLM_MODEL: ${LLM_MODEL:-claude-opus-4-6}
   LLM_MODEL_LIGHT: ${LLM_MODEL_LIGHT:-gpt-5.3-codex}
+  LLM_FALLBACK_ENABLED: ${LLM_FALLBACK_ENABLED:-false}
+  LLM_FALLBACK_API_KEY: ${LLM_FALLBACK_API_KEY:-}
+  LLM_FALLBACK_BASE_URL: ${LLM_FALLBACK_BASE_URL:-https://openrouter.ai/api/v1}
+  LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-openai/gpt-5-mini}
   # Docling chunking & table serializer tuning
   # Model: AITeamVN/Vietnamese_Embedding_v2 (BAAI/bge-m3 base, max_seq=2048)
   # 2048 = parent chunk size for 2-tier parent-child retrieval (Phase 6)
-  DOCLING_CHUNK_MAX_TOKENS: ${DOCLING_CHUNK_MAX_TOKENS:-2048}
+  DOCLING_CHUNK_MAX_TOKENS: ${DOCLING_CHUNK_MAX_TOKENS:-768}
   DOCLING_CHUNK_MERGE_PEERS: ${DOCLING_CHUNK_MERGE_PEERS:-true}
   DOCLING_TABLE_MARKDOWN_MAX_COLS: ${DOCLING_TABLE_MARKDOWN_MAX_COLS:-4}
   DOCLING_TABLE_MARKDOWN_MAX_CELLS: ${DOCLING_TABLE_MARKDOWN_MAX_CELLS:-36}
@@ -33,6 +39,11 @@ x-common-env: &common-env
   DOCLING_PREFIX_HEADING_ROWKEY: ${DOCLING_PREFIX_HEADING_ROWKEY:-true}
   DOCLING_GROUP_LOCK_ENABLED: ${DOCLING_GROUP_LOCK_ENABLED:-true}
   DOCLING_GROUP_LOCK_MAX_CHARS: ${DOCLING_GROUP_LOCK_MAX_CHARS:-2800}
+  # Docling VLM (tắt mặc định: tránh gọi OpenRouter 10-60s/ảnh tuần tự)
+  DOCLING_VLM_ENABLED: ${DOCLING_VLM_ENABLED:-false}
+  DOCLING_VLM_MIN_SIZE: ${DOCLING_VLM_MIN_SIZE:-300}
+  DOCLING_VLM_MAX_IMAGES: ${DOCLING_VLM_MAX_IMAGES:-10}
+  DOCLING_VLM_PROMPT: ${DOCLING_VLM_PROMPT:-}
   # PaddleOCR for scanned documents (Phase 9)
   ENABLE_PADDLE_OCR: ${ENABLE_PADDLE_OCR:-false}
 
@@ -96,6 +107,7 @@ services:
       dockerfile: Dockerfile
     container_name: chatsnp-backend
     restart: unless-stopped
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 1
     volumes:
       - ./backend:/app
       - media-data:/app/media
@@ -127,6 +139,10 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://ezaiapi.com}
       LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-gpt-5.3-codex}
+      LLM_FALLBACK_ENABLED: ${LLM_FALLBACK_ENABLED:-false}
+      LLM_FALLBACK_API_KEY: ${LLM_FALLBACK_API_KEY:-}
+      LLM_FALLBACK_BASE_URL: ${LLM_FALLBACK_BASE_URL:-https://openrouter.ai/api/v1}
+      LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-openai/gpt-5-mini}
     ports:
       - "3000:3000"
     depends_on:
@@ -180,7 +196,7 @@ services:
       dockerfile: Dockerfile
     container_name: chatsnp-worker-media
     restart: unless-stopped
-    command: celery -A src.worker.celery_app worker -Q media_process -c 1 --loglevel=info -n media@%h
+    command: celery -A src.worker.celery_app worker -Q media_process -c 1 --loglevel=info -n media@%h --soft-time-limit=300 --time-limit=600 --max-tasks-per-child=50
     volumes:
       - ./backend:/app
       - media-data:/app/media

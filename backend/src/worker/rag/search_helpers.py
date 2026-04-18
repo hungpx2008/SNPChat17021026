@@ -358,7 +358,7 @@ def _fallback_semantic_search(
         if score < RAG_SCORE_THRESHOLD:
             continue
         payload = point.payload or {}
-        content = payload.get("content", "")
+        content = payload.get("text", "")
         results.append(SearchResult(
             doc_id=str(point.id) if point.id else "",
             title=payload.get("source_file", ""),
