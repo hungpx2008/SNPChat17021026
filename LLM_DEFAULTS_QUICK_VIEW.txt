@@ -1,0 +1,192 @@
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║           CHATSNP LLM DEFAULTS AUDIT - QUICK VIEW & LOOKUP TABLE            ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+📍 ALL 15 LOCATIONS AT A GLANCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: backend/src/core/config.py
+├─ Line 22 → OPENAI_BASE_URL = "https://openrouter.ai/api/v1"
+└─ Line 24 → LLM_MODEL = "openai/gpt-5-nano"
+
+FILE: backend/src/services/lida_service.py
+├─ Line 35 → openai_base = "https://openrouter.ai/api/v1"
+└─ Line 36 → model = "openai/gpt-5-nano"
+
+FILE: backend/src/services/search/query_enhancer.py
+├─ Line 125 → model = "openai/gpt-4o-mini"
+└─ Line 127 → api_base = "https://openrouter.ai/api/v1"
+
+FILE: backend/src/services/docling_service.py (⚠️  DIRECT OPENAI)
+├─ Line 649 → base_url = "https://api.openai.com/v1"
+└─ Line 650 → model = "gpt-4o-mini"
+
+FILE: backend/src/worker/data_tasks.py
+├─ Line 23 → openai_base = "https://openrouter.ai/api/v1"
+└─ Line 24 → llm_model = "openai/gpt-5-nano"
+
+FILE: backend/src/worker/chat_tasks.py
+├─ Line 289 → llm_model = "openai/gpt-4o-mini" [Context building]
+├─ Line 394 → openai_base = "https://openrouter.ai/api/v1" [Chat synthesis]
+├─ Line 396 → llm_model = "openai/gpt-4o-mini" [Chat synthesis]
+└─ Line 1085 → llm_model = "openai/gpt-5-nano" [Summarization]
+
+FILE: backend/src/worker/gardener_tasks.py
+├─ Line 39 → openai_base = "https://openrouter.ai/api/v1"
+└─ Line 40 → llm_model = "openai/gpt-5-nano"
+
+FILE: backend/src/worker/helpers.py (⚠️  DIRECT OPENAI)
+├─ Line 24 → base_url = "https://api.openai.com/v1" [_extract_text_from_image]
+├─ Line 25 → model = "gpt-4o-mini"
+├─ Line 80 → base_url = "https://api.openai.com/v1" [_improve_markdown_table]
+└─ Line 81 → model = "gpt-4o-mini"
+
+FILE: backend/src/core/mem0_local.py
+└─ Line 32 → llm_model = "openai/gpt-4o-mini"
+
+FILE: backend/src/worker/media_tasks.py
+└─ Line 71 → vlm_model = "gpt-4o-mini" [in metadata dict]
+
+FILE: backend/src/services/chat_service.py
+└─ Line 186 → llm_model = "openai/gpt-4o-mini" [getattr fallback]
+
+FILE: frontend/src/ai/localClient.ts
+├─ Line 6 → OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1'
+└─ Line 11 → LOCAL_LLM_MODEL = 'gpt-oss-120b'
+
+
+📊 STATS BY MODEL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+MODEL NAME                LOCATIONS (COUNT)     FILES
+─────────────────────────────────────────────────────────────────────────────
+openai/gpt-5-nano         5                     config, lida, data_tasks,
+                                                chat_tasks (L1085), gardener
+
+openai/gpt-4o-mini        5                     query_enhancer, chat_tasks
+                                                (L289, L396), mem0, chat_service
+
+gpt-4o-mini (no prefix)   4                     docling, helpers (2x),
+                                                media_tasks
+
+gpt-oss-120b              1                     frontend/localClient
+
+
+📍 STATS BY BASE URL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BASE URL                  LOCATIONS (COUNT)     FILES
+─────────────────────────────────────────────────────────────────────────────
+openrouter.ai/api/v1      9 ✓ PRIMARY           config, lida, query_enhancer,
+                                                data_tasks, chat_tasks (2x),
+                                                gardener, frontend
+
+api.openai.com/v1         4 ⚠️  SECONDARY       docling, helpers (2x)
+
+
+🔍 HOW TO USE THESE DOCUMENTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FOR OVERVIEW:
+  → Start with LLM_DEFAULTS_SUMMARY.txt (this file)
+  → Read the critical observations section
+
+FOR MAKING UPDATES:
+  → Use LLM_DEFAULTS_CHECKLIST.md with checkboxes
+  → Follow line-by-line for each file
+
+FOR DETAILED REFERENCE:
+  → LLM_DEFAULTS_REFERENCE.md has full code context
+  → LLM_DEFAULTS_AUDIT.md has detailed analysis
+
+FOR QUICK LOOKUP:
+  → This file (LLM_DEFAULTS_QUICK_VIEW.txt)
+  → Use Ctrl+F to search for file names or line numbers
+
+
+⚠️  KEY THINGS TO REMEMBER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. TWO DIFFERENT BASE URLs:
+   - OpenRouter for most services (9 locations)
+   - Direct OpenAI for VLM/document services (4 locations)
+   ⚠️  Verify this split should continue before changing
+
+2. INCONSISTENT MODEL NAMING:
+   - "openai/gpt-5-nano" (with prefix for OpenRouter)
+   - "gpt-4o-mini" (no prefix for direct OpenAI)
+   ⚠️  Don't mix these up - prefix matters for API compatibility
+
+3. REASONING MODEL BEHAVIOR:
+   - gpt-5-nano sometimes returns empty content
+   - Code has fallback to gpt-4o-mini at chat_tasks.py:440
+   ⚠️  New reasoning model choice must handle this edge case
+
+4. FRONTEND USES DIFFERENT MODEL:
+   - Backend: gpt-5-nano + gpt-4o-mini
+   - Frontend: gpt-oss-120b (open-source)
+   ⚠️  Intentional or should be unified?
+
+5. ENV VARS OVERRIDE DEFAULTS:
+   - Backend: LLM_MODEL, OPENAI_BASE_URL
+   - Frontend: LOCAL_LLM_MODEL, NEXT_PUBLIC_LOCAL_LLM_MODEL, OPENROUTER_BASE_URL
+   ✓ These continue to work when you update hardcoded defaults
+
+
+🚀 QUICK UPDATE WORKFLOW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Open LLM_DEFAULTS_CHECKLIST.md in editor
+2. For each file section:
+   a. Open the file in your IDE
+   b. Go to the exact line number
+   c. Update the value
+   d. Check off the box
+3. When done, verify with grep:
+   grep -r "gpt-5-nano\|gpt-4o-mini\|gpt-oss-120b" --include="*.py" \
+       --include="*.ts" --include="*.tsx" backend/src/ frontend/src/
+4. Should return NO results if all updates complete
+
+
+📋 DOCUMENT MANIFEST
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. LLM_DEFAULTS_SUMMARY.txt       ← You are here
+   • Overview and critical observations
+   • Environment variables reference
+   • Implementation checklist
+
+2. LLM_DEFAULTS_CHECKLIST.md
+   • Step-by-step update tasks with checkboxes
+   • Quick reference tables
+   • Verification steps
+
+3. LLM_DEFAULTS_REFERENCE.md
+   • Full code snippets for each location
+   • Before/after context
+   • Line numbers and file references
+
+4. LLM_DEFAULTS_AUDIT.md
+   • Detailed audit findings
+   • Complete analysis
+   • Distribution charts and notes
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                    QUESTIONS? CHECK THESE FILES:
+    
+    Q: What models are currently used?
+    A: See "📊 STATS BY MODEL" section above
+    
+    Q: Where exactly do I need to make changes?
+    A: See LLM_DEFAULTS_QUICK_VIEW.txt or LLM_DEFAULTS_CHECKLIST.md
+    
+    Q: What are the environment variable names?
+    A: See LLM_DEFAULTS_SUMMARY.txt or LLM_DEFAULTS_CHECKLIST.md
+    
+    Q: Can I test changes by setting environment variables?
+    A: Yes! LLM_MODEL, OPENAI_BASE_URL, LOCAL_LLM_MODEL all work
+    
+    Q: Are there tests I should run?
+    A: See verification steps in LLM_DEFAULTS_CHECKLIST.md
+═══════════════════════════════════════════════════════════════════════════════

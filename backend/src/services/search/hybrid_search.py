@@ -282,7 +282,9 @@ class HybridSearchService:
                     continue
 
                 payload = point.payload or {}
-                content = payload.get("content", "")
+                # Document chunks are stored in Qdrant under `text`.
+                # Fall back to `content` for any legacy payloads.
+                content = payload.get("text") or payload.get("content", "")
 
                 results.append({
                     "doc_id": str(point.id) if point.id else "",

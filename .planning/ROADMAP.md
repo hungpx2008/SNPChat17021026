@@ -61,3 +61,35 @@
 - **Status:** Complete (discovered already implemented — verified 2026-04-14, gated behind ENABLE_PADDLE_OCR=true)
 - **Implemented files:** `backend/src/services/ocr_service.py` (OCRService), `backend/src/worker/media_tasks.py` (integration)
 - **Depends on:** Independent
+
+### Phase 10: Code Quality 5-Star Refactor
+
+- **Goal:** Refactor the two largest backend files, two largest frontend components, eliminate code duplication, tighten security, add unit tests, and improve type safety across the full stack
+- **Status:** Planned (2026-04-15)
+- **Depends on:** Phase 9
+- **Requirements:** CORS-DRY, CONSTANTS-CENTRAL, BACKEND-ERROR-CLASS, REQUEST-TIMEOUT, DOCLING-SPLIT, CHAT-TASKS-SPLIT, TASK-DISPATCH-EXTRACT, SIDEBAR-SPLIT, MESSAGELIST-SPLIT, SANITIZER-DRY, ICONBUTTON-EXTRACT, DEAD-CODE-REMOVE, PROP-DRILL-CONTEXT, SPECIFIC-EXCEPTIONS, DOCSTRINGS, TYPE-SAFETY, HOOK-ENCAPSULATION, UNIT-TESTS-SANITIZERS, UNIT-TESTS-RAG, FRONTEND-TESTS, SECURITY-CORS
+- **Plans:** 5 plans (29 tasks across 5 waves)
+- **Research:** `.planning/phases/10-code-quality-5-star-refactor/10-RESEARCH.md`
+
+Plans:
+- [ ] 10-01-PLAN (Wave 1, 7 tasks) — Constants, CORS helper, BackendError, request timeout
+- [ ] 10-02-PLAN (Wave 2, 6 tasks) — Split docling_service.py (821 LOC) and chat_tasks.py (1129 LOC) into subpackages
+- [ ] 10-03-PLAN (Wave 3, 7 tasks) — Split chat-sidebar.tsx (542 LOC) and chat-message-list.tsx (489 LOC), extract sanitizers, delete dead code
+- [ ] 10-04-PLAN (Wave 4, 5 tasks) — Specific exceptions, docstrings, type safety, hook encapsulation
+- [ ] 10-05-PLAN (Wave 5, 4 tasks) — Unit tests for sanitizers and RAG helpers, CORS security verification
+
+### Phase 11: Performance Optimization
+
+- **Goal:** Document upload ≤2MB completes in ≤90s p95 with visible progress; no concurrent-upload blocking; reliable timeouts; DB/HTTP pooling verified
+- **Status:** Planned (2026-04-17) — triggered by Phase 10 UAT Test 5 failure (upload stuck >7 min)
+- **Depends on:** Phase 10
+- **Requirements:** PERF-VLM-PARALLEL, PERF-VLM-TOGGLE, PERF-WORKER-CONCURRENCY, PERF-CELERY-TIME-LIMITS, PERF-PROGRESS, PERF-MEM0-HEALTH, PERF-CONVERTER-SINGLETON, PERF-SSE-UPLOAD, PERF-DB-POOL, PERF-DB-INDEXES, PERF-CHAT-PAGINATION, PERF-METRICS
+- **Research:** `.planning/phases/11-performance-optimization/11-RESEARCH.md`
+- **Debug trigger:** `.planning/debug/phase10-upload-perf.md`
+
+Plans (proposed):
+- [x] 11-01-PLAN — Docling VLM parallelization + converter singleton + stage timing (5 tasks)
+- [x] 11-02-PLAN — Celery worker hardening (concurrency, time limits, Mem0 health, circuit breaker) (5 tasks)
+- [x] 11-03-PLAN — Progress SSE (documents.meta.progress, Redis publish, /upload/{id}/stream, frontend UI) (5 tasks)
+- [x] 11-04-PLAN — DB pool + performance indexes (4 tasks)
+- [x] 11-05-PLAN — Chat history pagination + HTTP pool verification + regression tests (3 tasks)

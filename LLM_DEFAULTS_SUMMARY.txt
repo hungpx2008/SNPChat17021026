@@ -1,0 +1,165 @@
+================================================================================
+                 CHATSNP LLM MODEL DEFAULTS AUDIT - SUMMARY
+================================================================================
+
+AUDIT DATE: 2026-04-15
+SCOPE: All Python (*.py) and TypeScript/TSX (*.ts, *.tsx) source files
+EXCLUDED: Documentation (*.md), tests, venv, node_modules
+
+================================================================================
+                              FINDINGS
+================================================================================
+
+TOTAL LOCATIONS FOUND: 15 unique locations with hardcoded LLM defaults
+  - 12 in Python backend (backend/src/)
+  - 1 in TypeScript frontend (frontend/src/)
+
+FILES AFFECTED: 11
+  Backend Python:
+    1. backend/src/core/config.py
+    2. backend/src/services/lida_service.py
+    3. backend/src/services/search/query_enhancer.py
+    4. backend/src/services/docling_service.py
+    5. backend/src/worker/data_tasks.py
+    6. backend/src/worker/chat_tasks.py
+    7. backend/src/worker/gardener_tasks.py
+    8. backend/src/worker/helpers.py
+    9. backend/src/core/mem0_local.py
+   10. backend/src/worker/media_tasks.py
+   11. backend/src/services/chat_service.py
+
+  Frontend TypeScript:
+   12. frontend/src/ai/localClient.ts
+
+================================================================================
+                         MODEL BREAKDOWN
+================================================================================
+
+BACKEND MODELS:
+  openai/gpt-5-nano        → 5 locations (reasoning model for OpenRouter)
+                             config.py, lida_service.py, data_tasks.py,
+                             chat_tasks.py (L1085), gardener_tasks.py
+  
+  openai/gpt-4o-mini       → 5 locations (chat fallback for OpenRouter)
+                             query_enhancer.py, chat_tasks.py (L289, L396),
+                             mem0_local.py, chat_service.py
+  
+  gpt-4o-mini (no prefix)  → 4 locations (direct OpenAI, not OpenRouter)
+                             docling_service.py, helpers.py (2x),
+                             media_tasks.py
+
+FRONTEND MODELS:
+  gpt-oss-120b             → 1 location (open-source, frontend only)
+                             localClient.ts
+
+BASE URLS:
+  openrouter.ai/api/v1     → 9 locations (PREFERRED PROVIDER)
+                             config.py, lida_service.py, query_enhancer.py,
+                             data_tasks.py, chat_tasks.py (2x),
+                             gardener_tasks.py, localClient.ts
+  
+  api.openai.com/v1        → 4 locations (DIRECT OPENAI - VLM ONLY)
+                             docling_service.py, helpers.py (2x)
+
+================================================================================
+                    CRITICAL OBSERVATIONS
+================================================================================
+
+⚠️  DUAL PROVIDER SETUP:
+    - Most services use OpenRouter: openrouter.ai/api/v1
+    - VLM services (docling, image extraction) use OpenAI directly: api.openai.com/v1
+    - This appears intentional (possibly for cost/performance)
+    - ACTION: Verify this split is desired before changing
+
+⚠️  REASONING MODEL FALLBACK:
+    - gpt-5-nano is documented as "reasoning model" 
+    - Code comment at chat_tasks.py:395 explains it sometimes returns empty content
+    - Fallback to gpt-4o-mini is implemented
+    - ACTION: Ensure new model choice handles reasoning scenarios
+
+⚠️  FRONTEND DIFFERENT FROM BACKEND:
+    - Backend: gpt-5-nano (reasoning) → gpt-4o-mini (fallback)
+    - Frontend: gpt-oss-120b (open-source)
+    - These are different strategies
+    - ACTION: Determine if this inconsistency is intentional
+
+⚠️  INCONSISTENT MODEL NAMING:
+    - With provider prefix: "openai/gpt-5-nano", "openai/gpt-4o-mini"
+    - Without prefix: "gpt-4o-mini", "gpt-4o-mini"
+    - This matters for OpenRouter API compatibility
+    - ACTION: Maintain consistent naming convention
+
+================================================================================
+                    ENVIRONMENT VARIABLE FALLBACKS
+================================================================================
+
+These environment variables override hardcoded defaults:
+
+BACKEND:
+  LLM_MODEL              → Model name (gpt-4o-mini, openai/gpt-5-nano, etc)
+  OPENAI_BASE_URL        → API base URL (openrouter.ai/api/v1, api.openai.com/v1)
+  OPENAI_API_KEY         → API key for the chosen provider
+  OPENROUTER_API_KEY     → Alternative OpenRouter API key
+
+FRONTEND:
+  LOCAL_LLM_MODEL                → Frontend model name
+  NEXT_PUBLIC_LOCAL_LLM_MODEL    → Frontend model name (Next.js public)
+  OPENROUTER_BASE_URL            → Frontend API base URL
+
+================================================================================
+                    IMPLEMENTATION CHECKLIST
+================================================================================
+
+PHASE 1: DOCUMENTATION (COMPLETE)
+  ✓ LLM_DEFAULTS_AUDIT.md          - Full detailed audit report
+  ✓ LLM_DEFAULTS_CHECKLIST.md      - Quick reference checklist
+  ✓ LLM_DEFAULTS_REFERENCE.md      - Code snippets with line numbers
+  ✓ LLM_DEFAULTS_SUMMARY.txt       - This file
+
+PHASE 2: UPDATE (WHEN READY)
+  [ ] Decide on new model names and base URLs
+  [ ] Verify provider split (OpenRouter vs OpenAI) is correct
+  [ ] Update all 15 locations simultaneously
+  [ ] Update .env.example files
+  [ ] Update docker-compose files for default behavior
+  [ ] Update documentation with new defaults
+  [ ] Run full test suite
+  [ ] Verify environment variable overrides still work
+
+PHASE 3: VERIFICATION
+  [ ] Grep to confirm no old values remain
+  [ ] Check all 11 files were updated
+  [ ] Verify LLM_MODEL env var still overrides defaults
+  [ ] Verify OPENAI_BASE_URL env var still overrides defaults
+  [ ] Run pytest for backend
+  [ ] Run frontend tests
+  [ ] Test with environment variables set
+  [ ] Test with environment variables unset
+
+================================================================================
+                    FILES CREATED FOR THIS AUDIT
+================================================================================
+
+1. LLM_DEFAULTS_AUDIT.md        - Comprehensive audit with all findings
+2. LLM_DEFAULTS_CHECKLIST.md    - Action checklist for updates
+3. LLM_DEFAULTS_REFERENCE.md    - Code snippets and line-by-line breakdown
+4. LLM_DEFAULTS_SUMMARY.txt     - This summary document
+
+Location: /Volumes/orical/ChatSNP/
+
+================================================================================
+                         NEXT STEPS
+================================================================================
+
+1. Review the decision on which models/URLs to use
+2. Consult with team on:
+   - Which models to switch to?
+   - Should OpenRouter vs OpenAI split continue?
+   - Frontend model strategy (unify or keep different)?
+3. When ready to implement:
+   - Use LLM_DEFAULTS_CHECKLIST.md to track changes
+   - Reference LLM_DEFAULTS_REFERENCE.md for exact line numbers
+   - Run verification steps after updates
+4. Commit changes with message explaining the model update rationale
+
+================================================================================

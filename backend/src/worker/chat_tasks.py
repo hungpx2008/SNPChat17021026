@@ -10,7 +10,7 @@ Tasks:
 import logging
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from typing import Any
 from uuid import uuid4
 
@@ -31,6 +31,7 @@ RAG_SCORE_THRESHOLD = float(os.getenv("RAG_SCORE_THRESHOLD", "0.35"))
 # ---------------------------------------------------------------------------
 _hf_embed_model = None
 _hf_embed_model_name: str | None = None
+_hf_embed_model_lock = Lock()
 
 
 def _get_hf_embed_model():
@@ -38,11 +39,13 @@ def _get_hf_embed_model():
     global _hf_embed_model, _hf_embed_model_name  # noqa: PLW0603
     model_name = os.getenv("EMBEDDING_MODEL", "thanhtantran/Vietnamese_Embedding_v2")
     if _hf_embed_model is None or _hf_embed_model_name != model_name:
-        from sentence_transformers import SentenceTransformer
-        logger.info(f"[RAG] Loading SentenceTransformer embedding model: {model_name}")
-        _hf_embed_model = SentenceTransformer(model_name)
-        _hf_embed_model_name = model_name
-        logger.info("[RAG] Embedding model loaded and cached.")
+        with _hf_embed_model_lock:
+            if _hf_embed_model is None or _hf_embed_model_name != model_name:
+                from sentence_transformers import SentenceTransformer
+                logger.info(f"[RAG] Loading SentenceTransformer embedding model: {model_name}")
+                _hf_embed_model = SentenceTransformer(model_name)
+                _hf_embed_model_name = model_name
+                logger.info("[RAG] Embedding model loaded and cached.")
     return _hf_embed_model
 
 
@@ -50,6 +53,14 @@ def embed_query(text: str) -> list[float]:
     """Embed a single query string into a vector using the cached model."""
     model = _get_hf_embed_model()
     return model.encode(text, normalize_embeddings=True).tolist()
+
+
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    """Embed a batch of texts using one shared model instance."""
+    if not texts:
+        return []
+    model = _get_hf_embed_model()
+    return model.encode(texts, normalize_embeddings=True).tolist()
 
 
 # =============================================================================
@@ -80,10 +91,9 @@ def process_chat_response(
         if not chunks:
             return {"status": "ok", "message_id": message_id, "chunks": 0}
 
-        # 2. Embed each chunk locally (sentence-transformers)
+        # 2. Embed chunks in one batch to avoid duplicate model loads.
         chunk_texts = [t for t, _ in chunks]
-        with ThreadPoolExecutor(max_workers=min(len(chunk_texts), 8)) as pool:
-            vectors = list(pool.map(embed_query, chunk_texts))
+        vectors = embed_texts(chunk_texts)
 
         if any(v is None for v in vectors):
             return {"status": "warning", "message_id": message_id}
@@ -610,7 +620,9 @@ def _fallback_semantic_search(
         if score < RAG_SCORE_THRESHOLD:
             continue
         payload = point.payload or {}
-        content = payload.get("content", "")
+        # Document chunks are stored in Qdrant under `text`.
+        # Fall back to `content` for any legacy payloads.
+        content = payload.get("text") or payload.get("content", "")
         results.append(SearchResult(
             doc_id=str(point.id) if point.id else "",
             title=payload.get("source_file", ""),

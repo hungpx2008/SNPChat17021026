@@ -10,7 +10,6 @@ Tasks:
 import logging
 import os
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from uuid import uuid4
 
@@ -335,11 +334,10 @@ def _do_full_processing(
         raise ValueError(f"No chunks generated for {filename}")
 
     # 2. Embed locally (sentence-transformers)
-    from src.worker.chat_tasks import embed_query
+    from src.worker.chat_tasks import embed_texts
 
     chunk_texts = [ct for ct, _ in chunks_with_pages]
-    with ThreadPoolExecutor(max_workers=min(len(chunk_texts), 8)) as pool:
-        vectors = list(pool.map(embed_query, chunk_texts))
+    vectors = embed_texts(chunk_texts)
 
     # 3. Build payloads
     payloads: list[dict[str, Any]] = []
@@ -485,11 +483,10 @@ def transcribe_audio(
         chunks_with_pages = _smart_chunk(transcript, chunk_size=512, overlap=50)
         logger.info(f"[stt] {len(transcript)} chars → {len(chunks_with_pages)} chunks")
 
-        from src.worker.chat_tasks import embed_query
+        from src.worker.chat_tasks import embed_texts
 
         chunk_texts = [ct for ct, _ in chunks_with_pages]
-        with ThreadPoolExecutor(max_workers=min(len(chunk_texts), 8)) as pool:
-            vectors = list(pool.map(embed_query, chunk_texts))
+        vectors = embed_texts(chunk_texts)
 
         payloads = []
         vector_ids = []
