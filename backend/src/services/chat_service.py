@@ -104,6 +104,13 @@ class ChatService:
             cache_payload = [self.serialize_message(msg) for msg in all_messages]
             await self.redis.set(cache_key, json.dumps(cache_payload), ex=3600)
 
+        # Assistant/system messages are persisted only.
+        # They must not be auto-routed back into SQL/RAG/chat workers,
+        # otherwise the system can recurse on its own generated replies.
+        if message.role != "user":
+            db_message._intent_type = "none"
+            return db_message
+
         # ── Resolve mode: auto-route or explicit ──
         mode = getattr(message, 'mode', 'auto')
 
@@ -130,6 +137,7 @@ class ChatService:
                 session_id=session_id,
                 user_id=user_id,
                 department=department,
+                source_message_id=db_message.id,
             )
         else:  # mode == "chat" (default fallback)
             dispatch_chat_embed(
@@ -308,6 +316,4 @@ def chunk_text(text: str, chunk_size: int) -> list[str]:
     if not chunks:
         return [text]
     return chunks
-
-
 

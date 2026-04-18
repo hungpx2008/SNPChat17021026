@@ -19,6 +19,20 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+try:
+    from docling_core.transforms.chunker.hierarchical_chunker import (
+        BaseSerializerProvider as _BaseSerializerProvider,
+    )
+except ImportError:  # Fallback if Docling version lacks the base class
+    _BaseSerializerProvider = object  # type: ignore[assignment,misc]
+
+try:
+    from docling_core.transforms.serializer.base import (
+        BaseTableSerializer as _BaseTableSerializer,
+    )
+except ImportError:
+    _BaseTableSerializer = object  # type: ignore[assignment,misc]
+
 from .parser import (
     normalize_money_and_unit,
     pick_group_key_col,
@@ -52,7 +66,7 @@ def _get_table_config(config: dict[str, Any]) -> tuple[int, int, list[str], bool
     return markdown_max_cols, markdown_max_cells, group_key_hints, normalize_values
 
 
-class AdaptiveTableSerializer:
+class AdaptiveTableSerializer(_BaseTableSerializer):
     """Hybrid serialiser for arbitrary tables with optional value normalisation.
 
     Plugs into Docling's ``BaseTableSerializer`` protocol.  Small tables
@@ -222,7 +236,7 @@ class AdaptiveTableSerializer:
         return create_ser_result(text=text_res, span_source=parts)
 
 
-class TripletSerializerProvider:
+class TripletSerializerProvider(_BaseSerializerProvider):
     """Provides a ``ChunkingDocSerializer`` wired to our adaptive table
     serialiser.
 

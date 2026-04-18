@@ -17,6 +17,99 @@ from src.core.constants import RAG_SYSTEM_PROMPT
 logger = logging.getLogger(__name__)
 
 
+def _normalize_runtime_llm_settings(llm_settings: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(llm_settings, dict):
+        return {}
+    return {
+        "enabled": bool(llm_settings.get("fallbackEnabled")),
+        "base_url": str(llm_settings.get("fallbackBaseUrl") or "").strip(),
+        "api_key": str(llm_settings.get("fallbackApiKey") or "").strip(),
+        "model": str(llm_settings.get("fallbackModel") or "").strip(),
+    }
+
+
+def _is_retryable_quota_error(exc: httpx.HTTPError) -> bool:
+    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    try:
+        response_text = exc.response.text.lower() if getattr(exc, "response", None) else ""
+    except Exception:
+        response_text = ""
+    message = str(exc).lower()
+    haystack = f"{message} {response_text}"
+    return (
+        status_code == 429
+        or "rate limit" in haystack
+        or "quota" in haystack
+        or "too many requests" in haystack
+        or "credits" in haystack
+        or "exhausted" in haystack
+    )
+
+
+def _is_retryable_provider_error(exc: httpx.HTTPError) -> bool:
+    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    try:
+        response_text = exc.response.text.lower() if getattr(exc, "response", None) else ""
+    except Exception:
+        response_text = ""
+    message = str(exc).lower()
+    haystack = f"{message} {response_text}"
+    return (
+        _is_retryable_quota_error(exc)
+        or isinstance(exc, (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError))
+        or status_code in {500, 502, 503, 504}
+        or "connection refused" in haystack
+        or "connection error" in haystack
+        or "network" in haystack
+        or "timeout" in haystack
+        or "timed out" in haystack
+        or "temporarily unavailable" in haystack
+        or "overloaded" in haystack
+        or "server error" in haystack
+    )
+
+
+def _split_model_list(raw_models: str) -> list[str]:
+    return [model.strip() for model in raw_models.split(",") if model.strip()]
+
+
+def _build_llm_attempts(llm_settings: dict[str, Any] | None) -> list[dict[str, str]]:
+    primary_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY") or ""
+    primary_base = os.getenv("OPENAI_BASE_URL", "https://ezaiapi.com").rstrip("/")
+    primary_model = os.getenv("LLM_MODEL", "claude-opus-4-6")
+
+    attempts = [{
+        "label": "primary",
+        "api_key": primary_key,
+        "base_url": primary_base,
+        "model": primary_model,
+    }]
+
+    runtime = _normalize_runtime_llm_settings(llm_settings)
+    fallback_enabled = runtime.get("enabled") or os.getenv("LLM_FALLBACK_ENABLED", "").lower() == "true"
+    fallback_base = runtime.get("base_url") or os.getenv("LLM_FALLBACK_BASE_URL", "").rstrip("/") or primary_base
+    fallback_models_raw = (
+        runtime.get("model")
+        or os.getenv("LLM_FALLBACK_MODELS")
+        or os.getenv("LLM_FALLBACK_MODEL")
+        or os.getenv("LLM_MODEL_LIGHT", "")
+    )
+    fallback_key = runtime.get("api_key") or os.getenv("LLM_FALLBACK_API_KEY") or primary_key
+
+    if fallback_enabled and fallback_base and fallback_models_raw:
+        for index, fallback_model in enumerate(_split_model_list(fallback_models_raw), start=1):
+            fallback_attempt = {
+                "label": f"fallback-{index}",
+                "api_key": fallback_key,
+                "base_url": fallback_base,
+                "model": fallback_model,
+            }
+            if fallback_attempt["model"] != attempts[0]["model"] or fallback_attempt["base_url"] != attempts[0]["base_url"]:
+                attempts.append(fallback_attempt)
+
+    return attempts
+
+
 # ---------------------------------------------------------------------------
 # LLM synthesis
 # ---------------------------------------------------------------------------
@@ -30,6 +123,7 @@ def _synthesize_with_llm(
     summary_block: str = "",
     recent_block: str = "",
     system_prompt: str = "",
+    llm_settings: dict[str, Any] | None = None,
 ) -> str:
     """Call LLM via OpenRouter to synthesize a clean answer.
 
@@ -61,10 +155,6 @@ def _synthesize_with_llm(
     KeyError, ValueError
         When the LLM response is malformed or empty.
     """
-    openai_key = os.getenv("OPENAI_API_KEY", "")
-    openai_base = os.getenv("OPENAI_BASE_URL", "https://ezaiapi.com")
-    llm_model = os.getenv("LLM_MODEL", "claude-opus-4-6")
-
     # Use dynamic prompt if provided, otherwise fall back to static
     effective_prompt = system_prompt or RAG_SYSTEM_PROMPT
 
@@ -89,37 +179,54 @@ def _synthesize_with_llm(
 
     http_client = get_http_client()
 
-    try:
-        resp = http_client.post(
-            f"{openai_base.rstrip('/')}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {openai_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": llm_model,
-                "messages": [
-                    {"role": "system", "content": effective_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "temperature": 0.3,
-                "max_tokens": 1500,
-            },
-        )
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
-        if not content or not content.strip():
-            raise ValueError(
-                f"LLM returned empty content (model={llm_model}). "
-                "Check LLM_MODEL in .env — ensure it supports chat completions."
+    attempts = _build_llm_attempts(llm_settings)
+
+    last_http_error: httpx.HTTPError | None = None
+    for attempt_index, attempt in enumerate(attempts):
+        try:
+            resp = http_client.post(
+                f"{attempt['base_url'].rstrip('/')}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {attempt['api_key']}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": attempt["model"],
+                    "messages": [
+                        {"role": "system", "content": effective_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 1500,
+                },
             )
-        return content.strip()
-    except httpx.HTTPError as e:
-        logger.error(f"[LLM] Synthesis HTTP error: {e}")
-        raise
-    except (KeyError, ValueError) as e:
-        logger.error(f"[LLM] Synthesis response parsing failed: {e}")
-        raise
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"]
+            if not content or not content.strip():
+                raise ValueError(
+                    f"LLM returned empty content (model={attempt['model']}). "
+                    "Check LLM_MODEL / fallback settings — ensure it supports chat completions."
+                )
+            return content.strip()
+        except httpx.HTTPError as e:
+            last_http_error = e
+            should_retry = attempt_index + 1 < len(attempts) and _is_retryable_provider_error(e)
+            if should_retry:
+                logger.warning(
+                    "[LLM] %s model %s failed. Retrying next fallback.",
+                    attempt["label"],
+                    attempt["model"],
+                )
+                continue
+            logger.error(f"[LLM] Synthesis HTTP error: {e}")
+            raise
+        except (KeyError, ValueError) as e:
+            logger.error(f"[LLM] Synthesis response parsing failed: {e}")
+            raise
+
+    if last_http_error is not None:
+        raise last_http_error
+    raise ValueError("LLM synthesis failed before any attempt completed.")
 
 
 # ---------------------------------------------------------------------------

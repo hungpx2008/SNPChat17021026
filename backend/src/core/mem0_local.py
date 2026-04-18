@@ -13,6 +13,7 @@ Provides a singleton mem0.Memory instance and helper functions for:
 
 import logging
 import os
+from pathlib import Path
 
 from mem0 import Memory
 
@@ -26,13 +27,19 @@ def _build_config() -> dict:
     qdrant_host = os.environ.get("QDRANT_HOST", "qdrant")
     qdrant_port = int(os.environ.get("QDRANT_PORT", "6333"))
     qdrant_collection = os.environ.get("QDRANT_COLLECTION", "mem0_memories")
-    embedding_dim = int(os.environ.get("EMBEDDING_DIM", "1024"))
+    embedding_dim = int(
+        os.environ.get("EMBEDDING_DIMENSION")
+        or os.environ.get("EMBEDDING_DIM")
+        or "384"
+    )
 
     llm_provider = os.environ.get("LLM_PROVIDER", "openai")
     llm_model = os.environ.get("LLM_MODEL", "openai/gpt-4o-mini")
     embedder_provider = os.environ.get("EMBEDDER_PROVIDER", "huggingface")
-    embedder_model = os.environ.get(
-        "EMBEDDER_MODEL", "AITeamVN/Vietnamese_Embedding_v2"
+    embedder_model = (
+        os.environ.get("EMBEDDER_MODEL")
+        or os.environ.get("EMBEDDING_MODEL")
+        or "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     )
 
     openai_api_key = os.environ.get("OPENAI_API_KEY")
@@ -41,7 +48,8 @@ def _build_config() -> dict:
     openrouter_api_base = os.environ.get("OPENROUTER_API_BASE")
     hf_token = os.environ.get("HF_TOKEN")
 
-    history_db_path = os.environ.get("HISTORY_DB_PATH", "/app/history/history.db")
+    history_db_path = os.environ.get("HISTORY_DB_PATH", "/tmp/chatsnp/history.db")
+    Path(history_db_path).parent.mkdir(parents=True, exist_ok=True)
 
     api_key = openrouter_api_key or openai_api_key
 

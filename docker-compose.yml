@@ -30,7 +30,7 @@ x-common-env: &common-env
   # Docling chunking & table serializer tuning
   # Model: AITeamVN/Vietnamese_Embedding_v2 (BAAI/bge-m3 base, max_seq=2048)
   # 2048 = parent chunk size for 2-tier parent-child retrieval (Phase 6)
-  DOCLING_CHUNK_MAX_TOKENS: ${DOCLING_CHUNK_MAX_TOKENS:-768}
+  DOCLING_CHUNK_MAX_TOKENS: ${DOCLING_CHUNK_MAX_TOKENS:-2048}
   DOCLING_CHUNK_MERGE_PEERS: ${DOCLING_CHUNK_MERGE_PEERS:-true}
   DOCLING_TABLE_MARKDOWN_MAX_COLS: ${DOCLING_TABLE_MARKDOWN_MAX_COLS:-4}
   DOCLING_TABLE_MARKDOWN_MAX_CELLS: ${DOCLING_TABLE_MARKDOWN_MAX_CELLS:-36}
@@ -196,7 +196,8 @@ services:
       dockerfile: Dockerfile
     container_name: chatsnp-worker-media
     restart: unless-stopped
-    command: celery -A src.worker.celery_app worker -Q media_process -c 1 --loglevel=info -n media@%h --soft-time-limit=300 --time-limit=600 --max-tasks-per-child=50
+    # Two concurrent slots allow a second upload to start while first is in Docling parsing.
+    command: celery -A src.worker.celery_app worker -Q media_process -c 2 --loglevel=info -n media@%h --soft-time-limit=300 --time-limit=600 --max-tasks-per-child=50
     volumes:
       - ./backend:/app
       - media-data:/app/media
@@ -204,6 +205,10 @@ services:
       - paddle-models:/root/.paddleocr
     environment:
       <<: *common-env
+    deploy:
+      resources:
+        limits:
+          memory: 2g
     depends_on:
       postgres:
         condition: service_healthy

@@ -1,7 +1,8 @@
 'use server';
 
 import { z } from 'zod';
-import { localOpenAI, LOCAL_LLM_MODEL } from '@/ai/localClient';
+import { createChatCompletionWithFallback, LOCAL_LLM_MODEL } from '@/ai/localClient';
+import { type ChatRuntimeLlmSettings } from '@/lib/llm-settings';
 
 const ContextBlockSchema = z.object({
   title: z.string().min(1),
@@ -13,6 +14,14 @@ const ContextualHelpInputSchema = z.object({
   department: z.string().min(1).describe('The department selected by the user.'),
   user_id: z.string().optional().describe('User identifier for long-term memory.'),
   context: z.array(ContextBlockSchema).optional(),
+  llmSettings: z
+    .object({
+      fallbackEnabled: z.boolean(),
+      fallbackBaseUrl: z.string(),
+      fallbackApiKey: z.string(),
+      fallbackModel: z.string(),
+    })
+    .optional(),
 });
 export type ContextualHelpInput = z.infer<typeof ContextualHelpInputSchema>;
 
@@ -68,10 +77,10 @@ export async function getContextualHelp(
   console.log('[contextual-help] messages payload', messages);
   console.log('[contextual-help] user_id', rawInput?.user_id);
 
-  const resp = await localOpenAI.chat.completions.create({
+  const resp = await createChatCompletionWithFallback({
     model: LOCAL_LLM_MODEL,
     messages,
-  });
+  }, input.llmSettings as ChatRuntimeLlmSettings | undefined);
 
   const text =
     resp.choices?.[0]?.message?.content?.toString() ??

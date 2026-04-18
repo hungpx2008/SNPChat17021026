@@ -1,0 +1,291 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║                     CHATSNP PROJECT STRUCTURE AT A GLANCE                 ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+📦 ROOT DIRECTORY (chatSNP170226/)
+├─ 🐍 backend/                (Python 3.10+ | FastAPI | 7-15 services)
+├─ 🔷 frontend/               (TypeScript | Next.js 15 | React 18)
+├─ 🐳 docker-compose.yml      (Development orchestration - 10 services)
+├─ 🐳 docker-compose.pro.yml  (Production orchestration - optimized)
+├─ .env.example               (Configuration template)
+└─ [Documentation files]      (Analysis reports)
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🐍 BACKEND STRUCTURE (Python 3.10+ | FastAPI | 55+ dependencies)
+
+src/
+│
+├─ main.py                          [⚙️ FastAPI App Factory]
+│  └─ Creates app, sets up CORS, lifespan, mounts routers
+│
+├─ api/ (📡 HTTP Endpoints)
+│  ├─ chat.py                       [POST /chat/stream, /sessions/*]
+│  ├─ admin.py                      [Queue mgmt, uploads, operations]
+│  ├─ upload.py                     [File upload + Docling processing]
+│  ├─ feedback.py                   [User ratings on responses]
+│  ├─ tts.py                        [Text-to-speech streaming]
+│  ├─ memories.py                   [Mem0 memory CRUD]
+│  └─ deps.py                       [Dependency injection]
+│
+├─ core/ (⚙️ Infrastructure)
+│  ├─ config.py                     [Pydantic Settings from env]
+│  ├─ db.py                         [SQLAlchemy engine, async sessions]
+│  ├─ celery_config.py              [Celery broker/backend setup]
+│  ├─ redis_client.py               [Redis singleton]
+│  ├─ qdrant_setup.py               [Vector DB initialization]
+│  ├─ mem0_local.py                 [Mem0 wrapper]
+│  ├─ vanna_setup.py                [SQL agent initialization]
+│  └─ http_client.py                [HTTPX client]
+│
+├─ models/ (🗂️ ORM Models)
+│  └─ models.py                     [Session, Message, Document, Feedback, Memory]
+│
+├─ schemas/ (📋 Pydantic Schemas)
+│  └─ schemas.py                    [ChatRequest, ChatResponse, etc.]
+│
+├─ repositories/ (🏦 Data Access Layer)
+│  ├─ sessions.py                   [Session CRUD]
+│  └─ messages.py                   [Message CRUD]
+│
+├─ services/ (🎯 Business Logic)
+│  ├─ chat_service.py               [Main orchestration, agent routing]
+│  ├─ context_builder.py            [Context retrieval for LLM]
+│  ├─ conversation_tree.py          [Branching conversations]
+│  ├─ intent_router.py              [Route to chat/SQL/RAG modes]
+│  ├─ docling_service.py            [PDF, PPTX, DOCX parsing]
+│  ├─ ocr_service.py                [PaddleOCR for scanned docs]
+│  ├─ lida_service.py               [Visualization generation]
+│  ├─ tts_service.py                [edge-tts audio generation]
+│  ├─ chunk_splitter.py             [Document chunking]
+│  ├─ parent_chunk_store.py         [2-tier chunk management]
+│  └─ search/ (🔍 Hybrid Search)
+│     ├─ hybrid_search.py           [BM25 + semantic combo]
+│     ├─ lexical_search.py          [Whoosh BM25]
+│     ├─ query_enhancer.py          [Query expansion, Vietnamese NLP]
+│     ├─ search_ranking.py          [Ranking/reranking]
+│     └─ semantic_cache.py          [Result caching]
+│
+├─ worker/ (👷 Celery Async Tasks)
+│  ├─ celery_app.py                 [Celery initialization]
+│  ├─ chat_tasks.py                 [Long-running chat tasks - 44KB]
+│  ├─ data_tasks.py                 [Indexing tasks]
+│  ├─ media_tasks.py                [Charts, audio processing]
+│  ├─ gardener_tasks.py             [Cleanup, optimization]
+│  └─ helpers.py                    [Task utilities]
+│
+└─ utils/ (🛠️ Utilities)
+   ├─ token_estimator.py            [Context window calculation]
+   └─ summarization.py              [Summarization utilities]
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🔷 FRONTEND STRUCTURE (TypeScript | Next.js 15 | shadcn/ui)
+
+src/
+│
+├─ app/ (📄 Next.js App Router)
+│  ├─ layout.tsx                    [Root layout + Auth/Language providers]
+│  ├─ page.tsx                      [Home page /]
+│  ├─ globals.css                   [Global TailwindCSS]
+│  ├─ api/
+│  │  └─ auth/                      [signup, login, reset routes]
+│  ├─ chat/page.tsx                 [Chat interface /chat]
+│  ├─ admin/page.tsx                [Admin panel /admin]
+│  ├─ login/page.tsx                [/login]
+│  ├─ signup/page.tsx               [/signup]
+│  └─ forgot-password/page.tsx      [/forgot-password]
+│
+├─ components/ (🎨 Reusable UI)
+│  ├─ ui/                           [38+ Shadcn/Radix UI components]
+│  │  ├─ button.tsx, input.tsx, card.tsx
+│  │  ├─ dialog.tsx, sidebar.tsx, form.tsx
+│  │  ├─ table.tsx, chart.tsx, carousel.tsx
+│  │  └─ [30+ more primitives]
+│  │
+│  ├─ chat/                         [Chat-specific components]
+│  │  ├─ chat-ui.tsx                [Main chat interface]
+│  │  ├─ chat-message-list.tsx      [Message display + streaming]
+│  │  ├─ chat-sidebar.tsx           [Session list]
+│  │  ├─ chat-composer.tsx          [Message input + attachments]
+│  │  ├─ document-sidebar.tsx       [Uploaded docs panel]
+│  │  ├─ llm-response-renderer.tsx  [Markdown rendering]
+│  │  ├─ feedback-buttons.tsx       [Like/dislike]
+│  │  ├─ branch-navigator.tsx       [Conversation tree nav]
+│  │  ├─ tts-button.tsx             [Text-to-speech]
+│  │  └─ [other chat components]
+│  │
+│  ├─ auth-provider.tsx             [Auth context wrapper]
+│  ├─ login-form.tsx                [Login form]
+│  ├─ signup-form.tsx               [Registration form]
+│  ├─ forgot-password-form.tsx      [Password reset form]
+│  ├─ language-provider.tsx         [i18n context]
+│  ├─ language-switcher.tsx         [Language toggle]
+│  ├─ department-selector.tsx       [Role selector]
+│  └─ [other layout components]
+│
+├─ hooks/ (🪝 Custom Hooks)
+│  ├─ use-chat-messages.ts          [Chat message fetching]
+│  ├─ use-chat-sessions.ts          [Session management]
+│  ├─ use-conversation-tree.ts      [Branching conversations]
+│  ├─ use-file-attachment.ts        [File uploads]
+│  ├─ use-session-stream.ts         [SSE streaming]
+│  └─ [other hooks]
+│
+├─ services/ (📡 API Clients)
+│  ├─ chat-backend.ts               [Chat API calls]
+│  ├─ admin-backend.ts              [Admin operations]
+│  ├─ auth-service.ts               [Authentication]
+│  └─ file-parser.ts                [Client-side parsing]
+│
+├─ lib/ (🛠️ Utilities)
+│  ├─ translations.ts               [i18n Vietnamese/English]
+│  ├─ llm-response-formatter.ts     [Response formatting]
+│  ├─ chatsnp-system-prompt.ts      [LLM system prompt]
+│  └─ memory.ts                     [Client-side memory]
+│
+├─ types/ (📝 TypeScript Definitions)
+│  └─ mem0.d.ts                     [Mem0 types]
+│
+├─ ai/ (🤖 AI Client & Flows)
+│  ├─ localClient.ts                [LLM client]
+│  └─ flows/                        [AI workflows]
+│
+└─ styles/                          [Global CSS]
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🐳 DOCKER SERVICES (docker-compose.yml - 10 services)
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TIER 1: DATA LAYER                                                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 1️⃣  postgres:16            Port 5432  | PostgreSQL relational DB          │
+│ 2️⃣  redis:7-alpine         Port 6379  | Cache & message broker (Celery)  │
+│ 3️⃣  qdrant:latest          Port 6333  | Vector DB for embeddings          │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TIER 2: CORE APPLICATION SERVICES                                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 4️⃣  backend (FastAPI)      Port 8000  | Main API server                    │
+│ 5️⃣  mem0                   Port 8888  | AI memory management service      │
+│ 6️⃣  frontend (Next.js)     Port 9002  | React web application             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TIER 3: BACKGROUND WORKERS & MONITORING                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 7️⃣  celery-worker          [async]    | Task processing (chat, data, media)│
+│ 8️⃣  celery-beat            [async]    | Job scheduler (cleanup, maintenance)
+│ 9️⃣  flower                 Port 5555  | Celery monitoring UI              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🔑 KEY TECHNOLOGY STACK
+
+┌──────────────────┬───────────────────────┬──────────────────────────────────┐
+│ Category         │ Technology            │ Purpose                          │
+├──────────────────┼───────────────────────┼──────────────────────────────────┤
+│ BACKEND CORE     │ FastAPI + Uvicorn     │ Web server & routing             │
+│                  │ SQLAlchemy 2.0+       │ ORM with async support           │
+│                  │ Pydantic v2           │ Request/response validation      │
+├──────────────────┼───────────────────────┼──────────────────────────────────┤
+│ DATABASE         │ PostgreSQL 16         │ Relational data storage          │
+│                  │ Redis 7               │ Cache & message broker           │
+│                  │ Qdrant                │ Vector embeddings storage        │
+├──────────────────┼───────────────────────┼──────────────────────────────────┤
+│ TASK QUEUE       │ Celery 5.3+           │ Async job processing             │
+│                  │ Redis (broker)        │ Message transport                │
+│                  │ Flower                │ Queue monitoring dashboard       │
+├──────────────────┼───────────────────────┼──────────────────────────────────┤
+│ AI/LLM           │ OpenRouter            │ LLM API (gpt-4o-mini)           │
+│                  │ Sentence-Transformers │ Vietnamese embeddings (1024-dim) │
+│                  │ Vanna                 │ SQL query generation             │
+│                  │ Mem0                  │ Persistent user memory           │
+├──────────────────┼───────────────────────┼──────────────────────────────────┤
+│ DOCUMENT PROC.   │ Docling               │ PDF, PPTX, DOCX parsing         │
+│                  │ PaddleOCR             │ Text extraction from images      │
+│                  │ LIDA                  │ Data visualization generation    │
+├──────────────────┼───────────────────────┼──────────────────────────────────┤
+│ SEARCH           │ Whoosh (BM25)         │ Full-text lexical search         │
+│                  │ Qdrant (semantic)     │ Semantic similarity search       │
+│                  │ Hybrid                │ Combined BM25 + semantic         │
+├──────────────────┼───────────────────────┼──────────────────────────────────┤
+│ FRONTEND         │ Next.js 15            │ React framework (App Router)     │
+│                  │ React 18              │ UI library                       │
+│                  │ TailwindCSS 3.4       │ Utility-first CSS                │
+│                  │ shadcn/ui + Radix UI  │ Accessible components            │
+├──────────────────┼───────────────────────┼──────────────────────────────────┤
+│ MISC FEATURES    │ edge-tts              │ Text-to-speech                   │
+│                  │ faster-whisper        │ Speech-to-text                   │
+│                  │ Zod                   │ Schema validation (TS)           │
+│                  │ React Hook Form       │ Form state management            │
+└──────────────────┴───────────────────────┴──────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📋 KEY FILES TO UNDERSTAND PROJECT
+
+High Priority:
+  1. backend/src/main.py              (Application entry point)
+  2. backend/src/api/chat.py          (Main chat endpoints)
+  3. backend/src/services/chat_service.py  (Core chat logic)
+  4. frontend/src/app/layout.tsx      (Root layout)
+  5. frontend/src/components/chat-ui.tsx   (Chat interface)
+  6. docker-compose.yml               (Infrastructure)
+  7. .env.example                     (Configuration)
+
+Medium Priority:
+  8. backend/src/services/context_builder.py
+  9. backend/src/services/search/hybrid_search.py
+  10. backend/src/worker/chat_tasks.py
+  11. frontend/src/hooks/use-session-stream.ts
+  12. frontend/src/services/chat-backend.ts
+
+═══════════════════════════════════════════════════════════════════════════════
+
+⚠️ CODE ORGANIZATION ISSUES TO INVESTIGATE
+
+1. 📏 Large Files:
+   - chat_tasks.py (44 KB) — Consider splitting by task type
+   - docling_service.py (33 KB) — Document processing logic oversized
+   
+2. 📦 Dependencies:
+   - 55+ dependencies in backend (audit for unused)
+   - Some bundled with complex sub-deps
+   
+3. 📚 Documentation:
+   - Limited docstrings in service layer
+   - Complex functions need explanations
+   
+4. 🧪 Testing:
+   - Limited test coverage relative to source
+   - Few integration tests
+   
+5. 🔐 Authentication:
+   - Currently localStorage only (no JWT)
+   - No token refresh mechanism
+   
+6. ❌ Error Handling:
+   - Inconsistent exception patterns
+   - Some silent failures in services
+
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ STRENGTHS TO MAINTAIN
+
+✓ Clean layer separation (API → Services → Repositories → Models)
+✓ Async-first throughout (FastAPI, SQLAlchemy, Celery)
+✓ Comprehensive AI stack (LLM, embeddings, OCR, TTS, memory)
+✓ Production-ready Docker setup (health checks, networking)
+✓ Modern frontend (Next.js 15, shadcn/ui, TypeScript)
+✓ Hybrid search (BM25 + semantic for robustness)
+✓ Vietnamese-first design (translations, embeddings, prompts)
+
+═══════════════════════════════════════════════════════════════════════════════
+
+Generated: April 15, 2026
+For detailed analysis, see: PROJECT_STRUCTURE_ANALYSIS.md
+

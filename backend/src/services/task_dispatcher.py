@@ -41,6 +41,7 @@ def dispatch_rag_search(
     user_id: str | None = None,
     department: str | None = None,
     target_message_id: str | UUID | None = None,
+    source_message_id: str | UUID | None = None,
 ) -> None:
     """Enqueue RAG document search for a user question."""
     from src.worker.tasks import rag_document_search
@@ -53,6 +54,8 @@ def dispatch_rag_search(
     }
     if target_message_id is not None:
         kwargs["target_message_id"] = str(target_message_id)
+    if source_message_id is not None:
+        kwargs["source_message_id"] = str(source_message_id)
     rag_document_search.delay(**kwargs)
 
 

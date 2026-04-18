@@ -10,7 +10,7 @@ Tasks:
 import logging
 import os
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
+import gc
 from typing import Any
 from uuid import uuid4
 
@@ -19,6 +19,40 @@ import httpx
 from .celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_text_from_pdf_fast(file_path: str) -> tuple[str, int]:
+    """Extract text and page count from a text-based PDF using poppler."""
+    try:
+        text_proc = subprocess.run(
+            ["pdftotext", "-layout", "-enc", "UTF-8", file_path, "-"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        text = (text_proc.stdout or "").strip()
+
+        page_count = 0
+        info_proc = subprocess.run(
+            ["pdfinfo", file_path],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for line in (info_proc.stdout or "").splitlines():
+            if line.startswith("Pages:"):
+                try:
+                    page_count = int(line.split(":", 1)[1].strip())
+                except (TypeError, ValueError):
+                    page_count = 0
+                break
+
+        return text, page_count
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning(f"[pdf_fast] pdftotext failed for {file_path}: {exc}")
+        return "", 0
 
 
 # =============================================================================
@@ -102,8 +136,29 @@ def process_document(
 
         # --- Branch B: All other documents → Docling ---
         else:
+            if ext == ".pdf" and os.getenv("PDF_FAST_TEXT_ENABLED", "true").lower() == "true":
+                fast_text, fast_pages = _extract_text_from_pdf_fast(file_path)
+                if len(fast_text) >= 500:
+                    extracted_text = fast_text
+                    page_count = fast_pages
+                    table_count = 0
+                    deep_meta = {
+                        "extractor": "pdftotext",
+                        "page_count": fast_pages,
+                        "char_count": len(fast_text),
+                    }
+                    logger.info(
+                        f"[pdf_fast] Extracted {len(fast_text)} chars from {filename} "
+                        f"via pdftotext ({fast_pages} pages); skipping Docling."
+                    )
+                else:
+                    logger.info(
+                        f"[pdf_fast] pdftotext produced too little text for {filename} "
+                        f"({len(fast_text)} chars); falling back to Docling."
+                    )
+
             # PPTX → convert to PDF for preview (parallel to Docling processing)
-            if ext in (".pptx", ".ppt"):
+            if not extracted_text and ext in (".pptx", ".ppt"):
                 try:
                     out_dir = os.path.dirname(file_path) or "/tmp"
                     subprocess.run(
@@ -118,82 +173,90 @@ def process_document(
                 except (OSError, subprocess.SubprocessError) as exc:
                     logger.warning(f"[process] PPTX→PDF conversion failed: {exc}")
 
-            logger.info(f"[process] Sending to Docling: {filename}")
-            from src.services.docling_service import process_document_deep
-            deep_result = process_document_deep(file_path)
+            if not extracted_text:
+                logger.info(f"[process] Sending to Docling: {filename}")
+                from src.services.docling_service import process_document_deep
+                deep_result = process_document_deep(file_path)
 
-            if not deep_result.markdown:
-                raise ValueError(f"Docling returned empty result for {filename}")
+                if not deep_result.markdown:
+                    raise ValueError(f"Docling returned empty result for {filename}")
 
-            extracted_text = deep_result.markdown
-            page_count = deep_result.page_count
-            table_count = len(deep_result.tables)
-            deep_meta = deep_result.metadata or None
+                extracted_text = deep_result.markdown
+                page_count = deep_result.page_count
+                table_count = len(deep_result.tables)
+                deep_meta = deep_result.metadata or None
 
-            prechunked_chunks = [
-                {
-                    "text": chunk.text,
-                    "page": chunk.page_number,
-                    "headings": chunk.headings,
-                    "row_keys": (
-                        chunk.metadata.get("row_keys")
-                        if isinstance(chunk.metadata, dict)
-                        else []
-                    ),
-                }
-                for chunk in deep_result.chunks
-                if chunk.text and chunk.text.strip()
-            ]
-            logger.info(
-                f"[process] Docling done: {len(extracted_text)} chars, "
-                f"{table_count} tables, {page_count} pages, "
-                f"{len(prechunked_chunks)} chunks"
-            )
+                prechunked_chunks = [
+                    {
+                        "text": chunk.text,
+                        "page": chunk.page_number,
+                        "headings": chunk.headings,
+                        "row_keys": (
+                            chunk.metadata.get("row_keys")
+                            if isinstance(chunk.metadata, dict)
+                            else []
+                        ),
+                    }
+                    for chunk in deep_result.chunks
+                    if chunk.text and chunk.text.strip()
+                ]
+                logger.info(
+                    f"[process] Docling done: {len(extracted_text)} chars, "
+                    f"{table_count} tables, {page_count} pages, "
+                    f"{len(prechunked_chunks)} chunks"
+                )
 
-            # ── Phase 9: PaddleOCR fallback for scanned PDFs ──────────
-            # If Docling extracted very little text, the PDF is likely
-            # scanned/photographed. Fall back to OCR if enabled.
-            if ext == ".pdf":
-                from src.services.ocr_service import OCRService
-                if (
-                    OCRService.is_ocr_enabled()
-                    and OCRService.is_scanned_pdf(extracted_text, page_count)
-                ):
-                    logger.info(
-                        f"[process] Scanned PDF detected ({len(extracted_text)} chars / "
-                        f"{page_count} pages = "
-                        f"{len(extracted_text) // max(page_count, 1)} chars/page). "
-                        f"Falling back to PaddleOCR..."
-                    )
-                    try:
-                        ocr_service = OCRService()
-                        ocr_result = ocr_service.extract_from_pdf(file_path)
+                # Docling keeps heavyweight converter/model state alive in a
+                # singleton. Release it before loading the embedding model to
+                # reduce peak RSS and avoid worker OOM kills on large PDFs.
+                from src.services.docling.orchestrator import release_processor
+                release_processor()
+                gc.collect()
 
-                        if ocr_result.text.strip():
-                            # OCR succeeded — replace Docling output
-                            extracted_text = ocr_result.text
-                            prechunked_chunks = OCRService.to_prechunked_chunks(ocr_result)
-                            deep_meta = {
-                                **(deep_meta or {}),
-                                "extractor": "paddleocr",
-                                "ocr_confidence": ocr_result.confidence,
-                                "ocr_pages": len(ocr_result.pages),
-                                "docling_fallback_reason": "scanned_pdf",
-                            }
-                            logger.info(
-                                f"[ocr] PaddleOCR extracted {len(extracted_text)} chars, "
-                                f"{len(prechunked_chunks)} chunks from scanned PDF"
-                            )
-                        else:
-                            logger.warning(
-                                f"[ocr] PaddleOCR returned empty text for {filename}. "
-                                "Keeping Docling output."
-                            )
-                    except (OSError, RuntimeError) as ocr_exc:
-                        logger.warning(
-                            f"[ocr] PaddleOCR failed for {filename}: {ocr_exc}. "
-                            "Continuing with Docling output."
+                # ── Phase 9: PaddleOCR fallback for scanned PDFs ──────────
+                # If Docling extracted very little text, the PDF is likely
+                # scanned/photographed. Fall back to OCR if enabled.
+                if ext == ".pdf":
+                    from src.services.ocr_service import OCRService
+                    if (
+                        OCRService.is_ocr_enabled()
+                        and OCRService.is_scanned_pdf(extracted_text, page_count)
+                    ):
+                        logger.info(
+                            f"[process] Scanned PDF detected ({len(extracted_text)} chars / "
+                            f"{page_count} pages = "
+                            f"{len(extracted_text) // max(page_count, 1)} chars/page). "
+                            f"Falling back to PaddleOCR..."
                         )
+                        try:
+                            ocr_service = OCRService()
+                            ocr_result = ocr_service.extract_from_pdf(file_path)
+
+                            if ocr_result.text.strip():
+                                # OCR succeeded — replace Docling output
+                                extracted_text = ocr_result.text
+                                prechunked_chunks = OCRService.to_prechunked_chunks(ocr_result)
+                                deep_meta = {
+                                    **(deep_meta or {}),
+                                    "extractor": "paddleocr",
+                                    "ocr_confidence": ocr_result.confidence,
+                                    "ocr_pages": len(ocr_result.pages),
+                                    "docling_fallback_reason": "scanned_pdf",
+                                }
+                                logger.info(
+                                    f"[ocr] PaddleOCR extracted {len(extracted_text)} chars, "
+                                    f"{len(prechunked_chunks)} chunks from scanned PDF"
+                                )
+                            else:
+                                logger.warning(
+                                    f"[ocr] PaddleOCR returned empty text for {filename}. "
+                                    "Keeping Docling output."
+                                )
+                        except (OSError, RuntimeError) as ocr_exc:
+                            logger.warning(
+                                f"[ocr] PaddleOCR failed for {filename}: {ocr_exc}. "
+                                "Continuing with Docling output."
+                            )
 
         if not extracted_text.strip():
             raise ValueError(f"No text extracted from {filename}")
@@ -203,6 +266,8 @@ def process_document(
             _extractor = deep_meta.get("extractor", "vlm") if deep_meta else "vlm"
         elif deep_meta and deep_meta.get("extractor") == "paddleocr":
             _extractor = "paddleocr"
+        elif deep_meta and deep_meta.get("extractor") == "pdftotext":
+            _extractor = "pdftotext"
         else:
             _extractor = "docling"
 
@@ -277,7 +342,7 @@ def _do_full_processing(
             except (ValueError, TypeError):
                 page_num = 1
             parent_data.append({
-                "content": text,
+                "text": text,
                 "page_number": page_num,
                 "headings": item.get("headings") or [],
                 "metadata": {
@@ -337,11 +402,10 @@ def _do_full_processing(
         raise ValueError(f"No chunks generated for {filename}")
 
     # 2. Embed locally (sentence-transformers)
-    from src.worker.chat_tasks import embed_query
+    from src.worker.chat_tasks import embed_texts
 
     chunk_texts = [ct for ct, _ in chunks_with_pages]
-    with ThreadPoolExecutor(max_workers=min(len(chunk_texts), 8)) as pool:
-        vectors = list(pool.map(embed_query, chunk_texts))
+    vectors = embed_texts(chunk_texts)
 
     # 3. Build payloads
     payloads: list[dict[str, Any]] = []
@@ -486,11 +550,10 @@ def transcribe_audio(
         chunks_with_pages = _smart_chunk(transcript, chunk_size=512, overlap=50)
         logger.info(f"[stt] {len(transcript)} chars → {len(chunks_with_pages)} chunks")
 
-        from src.worker.chat_tasks import embed_query
+        from src.worker.chat_tasks import embed_texts
 
         chunk_texts = [ct for ct, _ in chunks_with_pages]
-        with ThreadPoolExecutor(max_workers=min(len(chunk_texts), 8)) as pool:
-            vectors = list(pool.map(embed_query, chunk_texts))
+        vectors = embed_texts(chunk_texts)
 
         payloads = []
         vector_ids = []

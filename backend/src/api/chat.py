@@ -194,12 +194,14 @@ async def regenerate_message(
 
     # Find the user question (parent of the original assistant message)
     user_question = ""
+    source_message_id: str | None = None
     if placeholder.parent_message_id:
         from src.repositories.messages import MessageRepository
         repo = MessageRepository(db)
         parent_msg = await repo.get_message_by_id(placeholder.parent_message_id)
         if parent_msg and parent_msg.role == "user":
             user_question = parent_msg.content
+            source_message_id = str(parent_msg.id)
 
     # Dispatch appropriate Celery task
     if mode == "rag":
@@ -209,6 +211,7 @@ async def regenerate_message(
             user_id=db_session.user_id,
             department=db_session.department,
             target_message_id=placeholder.id,
+            source_message_id=source_message_id,
         )
     elif mode == "sql":
         dispatch_sql_query(

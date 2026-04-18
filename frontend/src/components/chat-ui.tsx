@@ -31,6 +31,13 @@ import { useFileAttachment } from "@/hooks/use-file-attachment";
 import { useChatSearch } from "@/hooks/use-chat-search";
 import { useSessionStream } from "@/hooks/use-session-stream";
 import { useConversationTree } from "@/hooks/use-conversation-tree";
+import {
+  buildRuntimeLlmSettingsPayload,
+  DEFAULT_CHAT_RUNTIME_LLM_SETTINGS,
+  normalizeChatRuntimeLlmSettings,
+} from "@/lib/llm-settings";
+
+const LLM_SETTINGS_STORAGE_KEY = "chatsnp-llm-settings-v1";
 
 export function ChatUI({ department }: { department: string }) {
   const { t, language, setLanguage } = useLanguage();
@@ -58,6 +65,7 @@ export function ChatUI({ department }: { department: string }) {
   const [agentMode, setAgentMode] = useState<AgentMode>("auto");
   const [useInternalData, setUseInternalData] = useState(true);
   const [usePersonalData, setUsePersonalData] = useState(true);
+  const [llmSettings, setLlmSettings] = useState(DEFAULT_CHAT_RUNTIME_LLM_SETTINGS);
   const [waitingForTask, setWaitingForTask] = useState(false);
   // State riêng cho SSE: được set ngay khi dispatch task (không chờ activeChatId sync)
   const [streamSessionId, setStreamSessionId] = useState<string | null>(null);
@@ -231,6 +239,30 @@ export function ChatUI({ department }: { department: string }) {
     });
   }, [loadSessions, selectChat, resetMessages]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(LLM_SETTINGS_STORAGE_KEY);
+      if (raw) {
+        setLlmSettings(normalizeChatRuntimeLlmSettings(JSON.parse(raw)));
+      }
+    } catch (error) {
+      console.warn("Could not load saved LLM fallback settings", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(
+      LLM_SETTINGS_STORAGE_KEY,
+      JSON.stringify(normalizeChatRuntimeLlmSettings(llmSettings)),
+    );
+  }, [llmSettings]);
+
   // ─── Bridging callbacks (hooks → UI) ──────────────────────────
   const handleNewChat = useCallback(() => {
     _handleNewChat(resetMessages, clearSearch);
@@ -264,6 +296,18 @@ export function ChatUI({ department }: { department: string }) {
     logout();
     router.push("/login");
   }, [logout, router]);
+
+  const handleLlmSettingsChange = useCallback(
+    (patch: Partial<typeof llmSettings>) => {
+      setLlmSettings((current) =>
+        normalizeChatRuntimeLlmSettings({
+          ...current,
+          ...patch,
+        }),
+      );
+    },
+    [],
+  );
 
   // ─── Form submit ──────────────────────────────────────────────
   const handleFormSubmit = useCallback(
@@ -355,13 +399,21 @@ export function ChatUI({ department }: { department: string }) {
         textareaRef.current.style.height = "auto";
       }
       const fileToSend = attachedFile;
+      const runtimeLlmSettings = buildRuntimeLlmSettingsPayload(llmSettings);
+      const userMessageMetadata = {
+        ...(fileToSend ? { attachment: fileToSend } : {}),
+        ...(runtimeLlmSettings ? { llm_settings: runtimeLlmSettings } : {}),
+      };
       setAttachedFile(null);
 
       try {
         const appendResult = await chatBackend.appendMessage(sessionId, {
           role: "user",
           content: userInput,
-          metadata: fileToSend ? { attachment: fileToSend } : undefined,
+          metadata:
+            Object.keys(userMessageMetadata).length > 0
+              ? userMessageMetadata
+              : undefined,
           mode: agentMode,
         });
 
@@ -380,6 +432,9 @@ export function ChatUI({ department }: { department: string }) {
             sessionId,
             userId: userIdentifier,
             photoDataUri: fileToSend?.dataUri,
+            llmSettings: runtimeLlmSettings,
+            useInternalData,
+            usePersonalData,
           });
           const botResponse = llmResult.response;
 
@@ -409,12 +464,15 @@ export function ChatUI({ department }: { department: string }) {
       loadSessionMessages,
       t,
       userIdentifier,
+      useInternalData,
+      usePersonalData,
       submitting,
       selectChat,
       addSession,
       updateSession,
       addMessages,
       setAttachedFile,
+      llmSettings,
     ],
   );
 
@@ -457,6 +515,8 @@ export function ChatUI({ department }: { department: string }) {
           setUseInternalData={setUseInternalData}
           usePersonalData={usePersonalData}
           setUsePersonalData={setUsePersonalData}
+          llmSettings={llmSettings}
+          onLlmSettingsChange={handleLlmSettingsChange}
           sidebarOpen={sidebarOpen}
         />
         {error && (

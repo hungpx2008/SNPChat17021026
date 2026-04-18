@@ -21,10 +21,6 @@ from sqlalchemy.engine.url import make_url
 
 logger = logging.getLogger(__name__)
 
-# Unified embedding: Vietnamese_Embedding_v2 (1024 dim)
-VANNA_EMBEDDING_DIM = 1024
-
-
 class CustomVanna(Qdrant_VectorStore, OpenAI_Chat):
     def __init__(self, config=None):
         # Initialize OpenAI Chat (for LLM, NOT for embeddings)
@@ -39,7 +35,7 @@ class CustomVanna(Qdrant_VectorStore, OpenAI_Chat):
         """
         data = data.replace("\n", " ").strip()
         if not data:
-            return [0.0] * VANNA_EMBEDDING_DIM
+            return [0.0] * get_settings().embedding_dimension
 
         try:
             from src.worker.chat_tasks import embed_query
@@ -93,9 +89,10 @@ def get_vanna():
         )
 
         logger.info(
-            "Vanna initialized: embedding=Vietnamese_Embedding_v2 (%d dim) local, "
+            "Vanna initialized: embedding=%s (%d dim) local, "
             "collection=vanna_schemas_openai",
-            VANNA_EMBEDDING_DIM,
+            settings.embedding_model,
+            settings.embedding_dimension,
         )
         return _vn_instance
 

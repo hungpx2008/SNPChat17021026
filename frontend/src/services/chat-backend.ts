@@ -216,11 +216,11 @@ export const chatBackend = {
     department?: string | null;
     query: string;
     limit?: number;
-  }): Promise<SearchResult[]> {
+  }, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<SearchResult[]> {
     return request<SearchResult[]>('/sessions/search', {
       method: 'POST',
       body: JSON.stringify(payload),
-    });
+    }, undefined, options?.timeoutMs, options?.signal);
   },
 
   // ----- Document Upload APIs -----

@@ -445,9 +445,21 @@ class DocumentParser:
                 from docling.datamodel.base_models import InputFormat
 
                 pdf_pipeline_options = PdfPipelineOptions()
-                pdf_pipeline_options.generate_page_images = True
-                pdf_pipeline_options.images_scale = 2.0
-                pdf_pipeline_options.generate_picture_images = True
+                pdf_pipeline_options.do_ocr = env_bool(
+                    "DOCLING_INTERNAL_OCR",
+                    False,
+                )
+                pdf_pipeline_options.generate_page_images = env_bool(
+                    "DOCLING_GENERATE_PAGE_IMAGES",
+                    False,
+                )
+                pdf_pipeline_options.generate_picture_images = env_bool(
+                    "DOCLING_GENERATE_PICTURE_IMAGES",
+                    False,
+                )
+                pdf_pipeline_options.images_scale = float(
+                    os.getenv("DOCLING_IMAGES_SCALE", "1.0")
+                )
 
                 self._converter = DocumentConverter(
                     format_options={
@@ -458,7 +470,11 @@ class DocumentParser:
                 )
                 logger.info(
                     "[docling] DocumentConverter ready "
-                    "with Image Extraction enabled."
+                    "(ocr=%s, page_images=%s, picture_images=%s, scale=%s).",
+                    pdf_pipeline_options.do_ocr,
+                    pdf_pipeline_options.generate_page_images,
+                    pdf_pipeline_options.generate_picture_images,
+                    pdf_pipeline_options.images_scale,
                 )
             except ImportError as ie:
                 logger.error(
@@ -467,3 +483,7 @@ class DocumentParser:
                 )
                 raise
         return self._converter
+
+    def release_converter(self) -> None:
+        """Release the cached converter so large Docling models can be GC'ed."""
+        self._converter = None

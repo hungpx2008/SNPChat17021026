@@ -1,8 +1,9 @@
 'use server';
 
 import { z } from 'zod';
-import { localOpenAI, LOCAL_LLM_MODEL } from '@/ai/localClient';
+import { createChatCompletionWithFallback, LOCAL_LLM_MODEL } from '@/ai/localClient';
 import { extractTextFromFile } from '@/services/file-parser';
+import { type ChatRuntimeLlmSettings } from '@/lib/llm-settings';
 
 const dataUriRegex =
   /^data:([a-zA-Z0-9!#$&^_.+-]+\/[a-zA-Z0-9!#$&^_.+-]+);base64,[A-Za-z0-9+/=]+$/;
@@ -23,6 +24,14 @@ const MultimodalHelpInputSchema = z.object({
       "Optional photo/audio/document as data URI: 'data:<mimetype>;base64,<encoded>'"
     ),
   context: z.array(ContextBlockSchema).optional(),
+  llmSettings: z
+    .object({
+      fallbackEnabled: z.boolean(),
+      fallbackBaseUrl: z.string(),
+      fallbackApiKey: z.string(),
+      fallbackModel: z.string(),
+    })
+    .optional(),
 });
 export type MultimodalHelpInput = z.infer<typeof MultimodalHelpInputSchema>;
 
@@ -115,10 +124,10 @@ export async function getMultimodalHelp(
       userTextPreview: userText.slice(0, 500),
     });
 
-    const resp = await localOpenAI.chat.completions.create({
+    const resp = await createChatCompletionWithFallback({
       model: LOCAL_LLM_MODEL,
       messages: [...baseMessages, { role: 'user', content: userText }],
-    });
+    }, input.llmSettings as ChatRuntimeLlmSettings | undefined);
 
     const text =
       resp.choices?.[0]?.message?.content?.toString() ??
@@ -165,10 +174,10 @@ export async function getMultimodalHelp(
     contentPartsPreview: JSON.stringify(contentParts).slice(0, 500),
   });
 
-  const resp = await localOpenAI.chat.completions.create({
+  const resp = await createChatCompletionWithFallback({
     model: LOCAL_LLM_MODEL,
     messages: [...baseMessages, { role: 'user', content: contentParts as any }],
-  });
+  }, input.llmSettings as ChatRuntimeLlmSettings | undefined);
 
   const text =
     resp.choices?.[0]?.message?.content?.toString() ??

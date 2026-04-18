@@ -7,11 +7,11 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncEngine
 from unittest.mock import MagicMock, patch
 
-from app.config import get_settings
-from app.db import Base, get_engine
-from app.main import create_app
-from app.qdrant_client import ensure_collections, get_qdrant_client
-from app.redis_client import get_redis
+from src.core.config import get_settings
+from src.core.db import Base, get_engine
+from src.main import create_app
+from src.core.qdrant_setup import ensure_collections, get_qdrant_client
+from src.core.redis_client import get_redis
 
 
 load_dotenv(".env.databases")
@@ -38,7 +38,7 @@ async def app() -> FastAPI:
         return application
 
 
-@pytest_asyncio.fixture(scope="session", autouse=True)
+@pytest_asyncio.fixture(scope="session")
 async def setup_databases() -> None:
     settings = get_settings()
     engine: AsyncEngine = get_engine()
@@ -65,7 +65,7 @@ async def client(app: FastAPI):
         yield async_client
 
 
-@pytest_asyncio.fixture(autouse=True)
+@pytest_asyncio.fixture()
 async def cleanup_between_tests():
     yield
     engine: AsyncEngine = get_engine()

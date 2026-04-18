@@ -352,6 +352,17 @@ def get_processor() -> DoclingProcessor:
     return _processor
 
 
+def release_processor() -> None:
+    """Release the singleton processor and its converter to free memory."""
+    global _processor
+    if _processor is not None:
+        try:
+            _processor._parser.release_converter()
+        except Exception:
+            logger.debug("[docling] Failed to release converter cleanly", exc_info=True)
+        _processor = None
+
+
 def process_document_deep(file_path: str) -> ProcessingResult:
     """Convenience function for use in Celery tasks.
 
