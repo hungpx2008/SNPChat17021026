@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: Executing Phase 11
-last_updated: "2026-04-18T13:51:32.161Z"
-last_activity: 2026-04-18
+status: Executing Phase 06
+last_updated: "2026-04-19T01:04:40.128Z"
+last_activity: 2026-04-19
 progress:
   total_phases: 11
   completed_phases: 2
@@ -17,7 +17,21 @@ progress:
 
 ## Current Focus
 
-Phase 10: Code Quality 5-Star Refactor
+Phase 11: Performance Optimization
+
+## Phase 11 Progress
+
+- **Execution:** In progress (2026-04-18)
+- **Completed this pass:**
+  - 11-05 Task 1: Backend chat message pagination with `before_id`, `has_more`, `oldest_id`
+  - 11-05 Task 2: Frontend lazy loading of older chat messages when scrolling to top
+  - 11-01 Task 1 (partial): `DOCLING_VLM_ENABLED` default aligned to `false` in code/example env
+  - 11-02 Task 1 (partial): `docker-compose.pro.yml` worker concurrency aligned to `-c 2`
+  - 11-03 Tasks 1-4: `documents.meta.progress`, Redis publish, `/upload/{id}/stream` SSE, frontend document progress UI
+  - 11-01 Task 4: structured `stage_timing` logs emitted from upload/audio pipeline
+  - 11-02 Tasks 2-5: explicit task-level `soft_time_limit` / `time_limit` added for document, audio, SQL tasks; Mem0/Qdrant preflight fail-fast added to upload pipeline
+  - 11-04 (implementation path adjusted): startup-safe performance indexes ensured in `core/db.py`
+- **Still open:** Full regression/perf tests, formal migration framework for indexes
 
 ## Phase 10 Status
 
@@ -38,7 +52,7 @@ Phase 10: Code Quality 5-Star Refactor
 |---|-------------|------|--------|-----------|
 | 260418-es4 | Fix embedding model Vietnamese_Embedding_v2 và Qdrant field mismatch | 2026-04-18 | 9d33dc7d | [260418-es4-fix-embedding-model-vietnamese-embedding](.planning/quick/260418-es4-fix-embedding-model-vietnamese-embedding/) |
 
-Last activity: 2026-04-18
+Last activity: 2026-04-19
 
 ## Accumulated Context
 

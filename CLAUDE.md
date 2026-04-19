@@ -1,25 +1,12 @@
 # CLAUDE.md — ChatSNP Project
 
-## Auto-GSD (BẮT BUỘC)
+## Cách làm việc
 
-Khi user chat bất kỳ yêu cầu nào, TỰ ĐỘNG gọi Skill tool với đúng GSD command — KHÔNG bao giờ bắt user gõ slash command. Mapping:
+Xử lý yêu cầu trực tiếp, rõ ràng, ngắn gọn và ưu tiên hành động thật trên codebase hiện tại.
 
-| User nói gì | Gọi command |
-|---|---|
-| Muốn làm gì đó (mơ hồ) | `gsd:do` |
-| Làm nhanh cái nhỏ | `gsd:fast` |
-| Debug / fix bug | `gsd:debug` |
-| Review code | `gsd:code-review` |
-| Tiếp tục / làm tiếp | `gsd:next` |
-| Xem tiến độ | `gsd:progress` |
-| Thảo luận ý tưởng | `gsd:explore` |
-| Khởi tạo dự án mới | `gsd:new-project` |
-| Lên kế hoạch phase | `gsd:plan-phase` |
-| Thực thi phase | `gsd:execute-phase` |
-| Tạo PR / ship | `gsd:ship` |
-| Quay lại session cũ | `gsd:resume-work` |
+Không được in ra pseudo-tool-call, slash command, command nội bộ, hay các dòng điều phối như `gsd:do`, `gsd:do skill`, `Tôi sẽ route đến command phù hợp`, hoặc các câu tương tự.
 
-Nếu không chắc command nào → dùng `gsd:do` (nó sẽ tự route).
+Nếu có tool/skill thật trong môi trường và cần dùng thì gọi đúng tool theo cơ chế chuẩn của hệ thống. Nếu không có, tiếp tục làm việc trực tiếp mà không nhắc đến tool nội bộ.
 
 ## Dự án
 
