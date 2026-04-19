@@ -13,6 +13,7 @@ Provides a singleton mem0.Memory instance and helper functions for:
 
 import logging
 import os
+import concurrent.futures
 from pathlib import Path
 
 from mem0 import Memory
@@ -210,3 +211,21 @@ def delete_all_memories(
     if run_id:
         params["run_id"] = run_id
     mem.delete_all(**params)
+
+
+def mem0_health_check(timeout_s: float = 5.0) -> bool:
+    """Return True when mem0 lazy init succeeds and Qdrant is reachable."""
+    def _check() -> bool:
+        get_memory()
+        from src.core.qdrant_setup import get_qdrant_client
+        client = get_qdrant_client()
+        client.get_collections()
+        return True
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_check)
+            return future.result(timeout=timeout_s)
+    except Exception as exc:
+        logger.warning("[mem0-health] Check failed: %s", exc)
+        return False

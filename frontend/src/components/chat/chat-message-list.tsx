@@ -1,5 +1,6 @@
 'use client';
 
+import { useCallback, useEffect, useRef } from 'react';
 import type { RefObject } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -20,6 +21,9 @@ import type { Attachment, BranchInfo } from '@/services/chat-backend';
 interface ChatMessageListProps {
   messages: Message[];
   messagesEndRef: RefObject<HTMLDivElement>;
+  hasMoreMessages?: boolean;
+  loadingOlderMessages?: boolean;
+  onLoadOlderMessages?: () => Promise<void>;
   onPreviewAttachment?: (att: Attachment) => void;
   branchInfoMap?: Record<string, BranchInfo>;
   onNavigateBranch?: (messageId: string, direction: 'prev' | 'next') => void;
@@ -34,6 +38,9 @@ interface ChatMessageListProps {
 export function ChatMessageList({
   messages,
   messagesEndRef,
+  hasMoreMessages = false,
+  loadingOlderMessages = false,
+  onLoadOlderMessages,
   onPreviewAttachment,
   branchInfoMap = {},
   onNavigateBranch,
@@ -44,6 +51,53 @@ export function ChatMessageList({
   onCancelEdit,
   branchLoading,
 }: ChatMessageListProps) {
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const restoreScrollRef = useRef<{ previousHeight: number; previousTop: number } | null>(null);
+
+  const getViewport = useCallback(() => {
+    return scrollAreaRef.current?.querySelector<HTMLDivElement>('[data-radix-scroll-area-viewport]');
+  }, []);
+
+  const triggerLoadOlder = useCallback(async () => {
+    if (!hasMoreMessages || loadingOlderMessages || !onLoadOlderMessages) {
+      return;
+    }
+    const viewport = getViewport();
+    if (viewport) {
+      restoreScrollRef.current = {
+        previousHeight: viewport.scrollHeight,
+        previousTop: viewport.scrollTop,
+      };
+    }
+    await onLoadOlderMessages();
+  }, [getViewport, hasMoreMessages, loadingOlderMessages, onLoadOlderMessages]);
+
+  useEffect(() => {
+    const viewport = getViewport();
+    if (!viewport) {
+      return;
+    }
+
+    const handleScroll = () => {
+      if (viewport.scrollTop <= 24) {
+        void triggerLoadOlder();
+      }
+    };
+
+    viewport.addEventListener('scroll', handleScroll);
+    return () => viewport.removeEventListener('scroll', handleScroll);
+  }, [getViewport, triggerLoadOlder]);
+
+  useEffect(() => {
+    const viewport = getViewport();
+    const restore = restoreScrollRef.current;
+    if (!viewport || !restore) {
+      return;
+    }
+    viewport.scrollTop = viewport.scrollHeight - restore.previousHeight + restore.previousTop;
+    restoreScrollRef.current = null;
+  }, [getViewport, messages]);
+
   const ctxValue: ChatMessageContextValue = {
     onPreviewAttachment,
     branchInfoMap,
@@ -59,8 +113,18 @@ export function ChatMessageList({
   return (
     <ChatMessageProvider value={ctxValue}>
       <main className="flex-1 overflow-hidden">
-        <ScrollArea className="h-full">
+        <ScrollArea ref={scrollAreaRef} className="h-full">
           <div className="p-4 space-y-6">
+            {loadingOlderMessages && (
+              <div className="text-center text-sm text-muted-foreground">
+                Đang tải tin nhắn cũ hơn...
+              </div>
+            )}
+            {!hasMoreMessages && messages.length > 0 && (
+              <div className="text-center text-xs text-muted-foreground">
+                Đây là tin nhắn đầu tiên trong cuộc trò chuyện.
+              </div>
+            )}
             {messages.map((message, index) => {
               const metadata = (message as any).metadata || {};
               const attachments: Attachment[] = metadata.attachments || [];

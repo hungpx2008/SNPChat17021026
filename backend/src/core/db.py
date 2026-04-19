@@ -65,6 +65,7 @@ async def create_tables() -> None:
         if conn.dialect.name == "postgresql":
             await _ensure_metadata_columns(conn)
             await _ensure_branching_columns(conn)
+            await _ensure_performance_indexes(conn)
         else:
             logger.info("Skipping metadata column backfill for dialect: %s", conn.dialect.name)
 
@@ -123,3 +124,15 @@ async def _ensure_branching_columns(conn: AsyncConnection) -> None:
           AND cm.parent_message_id IS NULL
           AND sub.prev_id IS NOT NULL
     """))
+
+
+async def _ensure_performance_indexes(conn: AsyncConnection) -> None:
+    """Create missing performance indexes used by session/document list endpoints."""
+    index_statements = (
+        "CREATE INDEX IF NOT EXISTS idx_documents_user_created ON documents (user_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_chat_sessions_user_updated ON chat_sessions (user_id, updated_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_chat_messages_session_created ON chat_messages (session_id, created_at)",
+    )
+    for statement in index_statements:
+        await conn.execute(text(statement))
+    logger.info("Ensured performance indexes for documents/chat_sessions/chat_messages")

@@ -100,7 +100,7 @@ class DoclingProcessor:
             model = os.getenv(
                 "LLM_MODEL_LIGHT", "gpt-5.3-codex"
             )
-            vlm_enabled = env_bool("DOCLING_VLM_ENABLED", True)
+            vlm_enabled = env_bool("DOCLING_VLM_ENABLED", False)
             vlm_min_size = env_int("DOCLING_VLM_MIN_SIZE", 300)
             vlm_max_images = env_int("DOCLING_VLM_MAX_IMAGES", 10)
             vlm_prompt = os.getenv(

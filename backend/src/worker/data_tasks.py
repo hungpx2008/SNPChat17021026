@@ -10,6 +10,7 @@ import os
 from typing import Any, Literal
 
 import httpx
+from celery.exceptions import SoftTimeLimitExceeded
 
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
@@ -87,7 +88,13 @@ BACKEND_INTERNAL_URL = os.getenv("BACKEND_INTERNAL_URL", "http://backend:8000")
 # 🟠 QUEUE: data_batch — SQL & Data Sync
 # =============================================================================
 
-@celery_app.task(name="src.worker.tasks.run_sql_query", bind=True, max_retries=2)
+@celery_app.task(
+    name="src.worker.tasks.run_sql_query",
+    bind=True,
+    max_retries=2,
+    soft_time_limit=60,
+    time_limit=90,
+)
 def run_sql_query(
     self,
     question: str,
@@ -244,6 +251,26 @@ def run_sql_query(
             "attachments": attachments,
         }
 
+    except SoftTimeLimitExceeded:
+        logger.error("[sql] Truy vấn SQL vượt quá 60s cho session %s", session_id)
+        try:
+            from src.core.http_client import get_http_client
+            error_content = "Truy vấn SQL mất quá nhiều thời gian. Vui lòng thử câu hỏi đơn giản hơn."
+            if target_message_id:
+                get_http_client(timeout=10.0).patch(
+                    f"{BACKEND_INTERNAL_URL}/messages/{target_message_id}/content",
+                    json={"content": error_content},
+                )
+            else:
+                get_http_client(timeout=10.0).post(
+                    f"{BACKEND_INTERNAL_URL}/sessions/{session_id}/messages",
+                    json={"content": error_content, "role": "assistant"},
+                )
+        except httpx.HTTPError:
+            pass
+        from .helpers import publish_task_complete
+        publish_task_complete(session_id)
+        raise
     except Exception as exc:  # Justified: SQL pipeline orchestrator — must always save error response
         logger.exception("Error in SQL query (%s): %s", type(exc).__name__, exc)
         # Save Vietnamese error message — NEVER expose SQL/Python tracebacks to user

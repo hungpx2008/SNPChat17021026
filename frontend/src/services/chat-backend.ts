@@ -119,14 +119,19 @@ export interface BackendMessage {
   parent_message_id?: string | null;
   branch_index?: number;
   is_active_branch?: boolean;
+  task_dispatched?: boolean;
+  intent_type?: 'none' | 'chat' | 'sql' | 'rag';
 }
 
 export interface BackendSessionWithMessages extends BackendSession {
   messages: BackendMessage[];
+  has_more: boolean;
+  oldest_id: string | null;
 }
 
 type FetchSessionOptions = {
   limit?: number;
+  beforeId?: string;
 };
 
 export interface SearchResult {
@@ -143,8 +148,25 @@ export interface DocumentInfo {
   chunk_count: number;
   extractor_used: string | null;
   error_message: string | null;
+  meta?: {
+    progress?: DocumentProgressEvent;
+    [key: string]: unknown;
+  };
   created_at: string;
   updated_at: string;
+}
+
+export interface DocumentProgressEvent {
+  type?: 'progress' | 'done' | 'error' | 'timeout';
+  document_id?: string;
+  status?: string;
+  stage?: string;
+  pct?: number;
+  elapsed_ms?: number;
+  chunks_so_far?: number;
+  updated_at?: string;
+  message?: string;
+  details?: Record<string, unknown>;
 }
 
 export interface Attachment {
@@ -197,7 +219,13 @@ export const chatBackend = {
     sessionId: string,
     options?: FetchSessionOptions,
   ): Promise<BackendSessionWithMessages> {
-    const query = options?.limit !== undefined ? { limit: options.limit } : undefined;
+    const query =
+      options?.limit !== undefined || options?.beforeId
+        ? {
+            limit: options?.limit,
+            before_id: options?.beforeId,
+          }
+        : undefined;
     return request<BackendSessionWithMessages>(`/sessions/${sessionId}`, undefined, query);
   },
 
@@ -298,6 +326,10 @@ export const chatBackend = {
   /** Build the direct URL to preview/download a document file. */
   getDocumentDownloadUrl(documentId: string): string {
     return buildRequestUrl(`/upload/${documentId}/download`);
+  },
+
+  getDocumentProgressStreamUrl(documentId: string, userId?: string): string {
+    return buildRequestUrl(`/upload/${documentId}/stream`, { user_id: userId });
   },
 
   async submitFeedback(

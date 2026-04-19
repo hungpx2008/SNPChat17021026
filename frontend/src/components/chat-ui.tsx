@@ -85,6 +85,9 @@ export function ChatUI({ department }: { department: string }) {
     messagesLoading,
     messagesEndRef,
     loadSessionMessages,
+    loadOlderMessages,
+    hasMoreMessages,
+    loadingOlderMessages,
     welcomeMessage,
     mapBackendMessage,
     resetMessages,
@@ -417,7 +420,7 @@ export function ChatUI({ department }: { department: string }) {
           mode: agentMode,
         });
 
-        const taskDispatched = (appendResult as Record<string, unknown>)?.task_dispatched === true;
+        const taskDispatched = appendResult.task_dispatched === true;
 
         if (taskDispatched) {
           // SSE sẽ xử lý response — set streamSessionId ngay để SSE connect đúng session
@@ -534,6 +537,11 @@ export function ChatUI({ department }: { department: string }) {
         <ChatMessageList
           messages={messages}
           messagesEndRef={messagesEndRef}
+          hasMoreMessages={hasMoreMessages}
+          loadingOlderMessages={loadingOlderMessages}
+          onLoadOlderMessages={
+            activeChatId ? () => loadOlderMessages(activeChatId) : undefined
+          }
           onPreviewAttachment={(att) => setPreviewFile({ url: att.url, name: att.filename })}
           branchInfoMap={branchInfoMap}
           onNavigateBranch={handleNavigateBranch}

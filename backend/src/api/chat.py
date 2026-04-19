@@ -71,12 +71,17 @@ async def list_sessions(
 @router.get("/{session_id}", response_model=SessionWithMessages)
 async def get_session(
     session_id: UUID,
-    limit: int | None = Query(default=None, ge=1, le=1000),
+    limit: int | None = Query(default=50, ge=1, le=1000),
+    before_id: UUID | None = Query(default=None),
     db_session: ChatSession = Depends(get_session_or_404),
     db: AsyncSession = Depends(get_db_session),
 ) -> Any:
     service = ChatService(db)
-    messages = await service.get_session_with_messages(session_id, limit=limit)
+    page = await service.get_session_with_messages(
+        session_id,
+        limit=limit,
+        before_id=before_id,
+    )
     return {
         "id": session_id,
         "user_id": db_session.user_id,
@@ -84,7 +89,9 @@ async def get_session(
         "title": db_session.title,
         "created_at": db_session.created_at,
         "updated_at": db_session.updated_at,
-        "messages": messages,
+        "messages": page["messages"],
+        "has_more": page["has_more"],
+        "oldest_id": page["oldest_id"],
     }
 
 

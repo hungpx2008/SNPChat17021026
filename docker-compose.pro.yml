@@ -169,7 +169,7 @@ services:
       dockerfile: Dockerfile
     container_name: chatsnp-worker-media
     restart: unless-stopped
-    command: celery -A src.worker.celery_app worker -Q media_process -c 1 --loglevel=info -n media@%h --soft-time-limit=300 --time-limit=600 --max-tasks-per-child=50
+    command: celery -A src.worker.celery_app worker -Q media_process -c 2 --loglevel=info -n media@%h --soft-time-limit=300 --time-limit=600 --max-tasks-per-child=50
     volumes:
       - media-data:/app/media # Shared với backend
       - whoosh-index:/data/whoosh_index

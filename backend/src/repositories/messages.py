@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Iterable
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, text, update
+from sqlalchemy import and_, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.models import ChatMessage, ChatMessageChunk
@@ -78,6 +78,37 @@ class MessageRepository:
         )
         result = await self.session.execute(stmt)
         return list(result.scalars())
+
+    async def list_messages_paginated(
+        self,
+        session_id: UUID,
+        *,
+        limit: int = 50,
+        before_id: UUID | None = None,
+    ) -> tuple[list[ChatMessage], bool]:
+        stmt = select(ChatMessage).where(ChatMessage.session_id == session_id)
+
+        if before_id is not None:
+            ref_message = await self.get_message_by_id(before_id)
+            if ref_message is None or ref_message.session_id != session_id:
+                return [], False
+            stmt = stmt.where(
+                or_(
+                    ChatMessage.created_at < ref_message.created_at,
+                    and_(
+                        ChatMessage.created_at == ref_message.created_at,
+                        ChatMessage.id < ref_message.id,
+                    ),
+                )
+            )
+
+        stmt = stmt.order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc()).limit(limit + 1)
+        result = await self.session.execute(stmt)
+        messages = list(result.scalars())
+        has_more = len(messages) > limit
+        page = messages[:limit]
+        page.reverse()
+        return page, has_more
 
     # ── Branching methods ──────────────────────────────────────────
 

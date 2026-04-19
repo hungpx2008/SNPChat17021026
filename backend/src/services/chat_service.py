@@ -53,22 +53,42 @@ class ChatService:
             user_id, limit=self.settings.chat_max_sessions
         )
 
-    async def get_session_with_messages(self, session_id: UUID, limit: int | None = None):
+    async def get_session_with_messages(
+        self,
+        session_id: UUID,
+        limit: int | None = None,
+        before_id: UUID | None = None,
+    ) -> dict[str, Any]:
         cache_key = self._cache_key(session_id)
-        if limit is None:
+        if limit is None and before_id is None:
             cached = await self.redis.get(cache_key)
             if cached:
-                return json.loads(cached)
+                return {
+                    "messages": json.loads(cached),
+                    "has_more": False,
+                    "oldest_id": None,
+                }
 
-        if limit is None:
+        if limit is None and before_id is None:
             # Use active-branch walk for full conversation view
             messages = await self.message_repo.list_active_branch_messages(session_id)
+            has_more = False
         else:
-            messages = await self.message_repo.list_messages(session_id, limit=limit)
+            page_limit = limit or 50
+            messages, has_more = await self.message_repo.list_messages_paginated(
+                session_id,
+                limit=page_limit,
+                before_id=before_id,
+            )
         payload = [self.serialize_message(message) for message in messages]
-        if limit is None:
+        if limit is None and before_id is None:
             await self.redis.set(cache_key, json.dumps(payload), ex=3600)
-        return payload
+        oldest_id = payload[0]["id"] if payload else None
+        return {
+            "messages": payload,
+            "has_more": has_more,
+            "oldest_id": oldest_id,
+        }
 
     async def add_message(
         self,
@@ -316,4 +336,3 @@ def chunk_text(text: str, chunk_size: int) -> list[str]:
     if not chunks:
         return [text]
     return chunks
-

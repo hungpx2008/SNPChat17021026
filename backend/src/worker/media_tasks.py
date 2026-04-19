@@ -11,10 +11,12 @@ import logging
 import os
 import subprocess
 import gc
+import time
 from typing import Any
 from uuid import uuid4
 
 import httpx
+from celery.exceptions import SoftTimeLimitExceeded
 
 from .celery_app import celery_app
 
@@ -59,7 +61,13 @@ def _extract_text_from_pdf_fast(file_path: str) -> tuple[str, int]:
 # 🔵 QUEUE: media_process — Document Processing (Docling only)
 # =============================================================================
 
-@celery_app.task(name="src.worker.tasks.process_document", bind=True, max_retries=2)
+@celery_app.task(
+    name="src.worker.tasks.process_document",
+    bind=True,
+    max_retries=2,
+    soft_time_limit=300,
+    time_limit=360,
+)
 def process_document(
     self,
     file_path: str,
@@ -81,15 +89,62 @@ def process_document(
          - HybridChunker → semantic chunks with context prefix
       3. Chunks → Embed (Mem0) → Qdrant port_knowledge
     """
-    from .helpers import _smart_chunk, _update_document_status
+    from .helpers import (
+        _smart_chunk,
+        log_stage,
+        _update_document_status,
+        publish_document_event,
+        update_document_progress,
+    )
 
     filename = original_filename or os.path.basename(file_path)
     file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
     logger.info(f"[process] Starting Docling processing: {filename} ({file_size / 1024:.1f} KB)")
+    started_at = time.monotonic()
+
+    def mark_progress(stage: str, chunks_so_far: int = 0, details: dict[str, Any] | None = None) -> None:
+        if not document_id:
+            return
+        elapsed_ms = (time.monotonic() - started_at) * 1000
+        progress = update_document_progress(
+            document_id=document_id,
+            stage=stage,
+            elapsed_ms=elapsed_ms,
+            chunks_so_far=chunks_so_far,
+            details=details,
+        )
+        log_stage(document_id, stage, elapsed_ms, {"chunks_so_far": chunks_so_far, **(details or {})})
+        publish_document_event(document_id, {"type": "progress", "document_id": document_id, **progress})
 
     preview_pdf_path: str | None = None
 
     try:
+        if document_id:
+            from src.core.mem0_local import mem0_health_check
+
+            for attempt in range(1, 4):
+                if mem0_health_check(timeout_s=5.0):
+                    mark_progress("preflight", details={"attempt": attempt})
+                    break
+                logger.warning("[process] Mem0 health check failed (attempt %s/3)", attempt)
+                if attempt == 3:
+                    _update_document_status(
+                        document_id=document_id,
+                        status="error",
+                        error_message="Dịch vụ nhúng văn bản không khả dụng. Vui lòng thử lại sau.",
+                    )
+                    publish_document_event(
+                        document_id,
+                        {
+                            "type": "error",
+                            "document_id": document_id,
+                            "message": "Dịch vụ nhúng văn bản không khả dụng. Vui lòng thử lại sau.",
+                        },
+                    )
+                    log_stage(document_id, "preflight_failed", (time.monotonic() - started_at) * 1000)
+                    return {"status": "error", "reason": "mem0_unhealthy"}
+                time.sleep(2 ** attempt)
+
         _, ext = os.path.splitext(filename.lower())
         prechunked_chunks: list[dict[str, Any]] | None = None
         extracted_text = ""
@@ -99,6 +154,7 @@ def process_document(
 
         # --- Branch A: Images → VLM + optional OCR ---
         if ext in (".jpg", ".jpeg", ".png"):
+            mark_progress("parse")
             logger.info(f"[process] Image file detected → calling VLM")
             from src.worker.helpers import _extract_text_from_image
             vlm_text = _extract_text_from_image(file_path)
@@ -139,6 +195,7 @@ def process_document(
             if ext == ".pdf" and os.getenv("PDF_FAST_TEXT_ENABLED", "true").lower() == "true":
                 fast_text, fast_pages = _extract_text_from_pdf_fast(file_path)
                 if len(fast_text) >= 500:
+                    mark_progress("parse", details={"extractor": "pdftotext"})
                     extracted_text = fast_text
                     page_count = fast_pages
                     table_count = 0
@@ -174,6 +231,7 @@ def process_document(
                     logger.warning(f"[process] PPTX→PDF conversion failed: {exc}")
 
             if not extracted_text:
+                mark_progress("parse", details={"extractor": "docling"})
                 logger.info(f"[process] Sending to Docling: {filename}")
                 from src.services.docling_service import process_document_deep
                 deep_result = process_document_deep(file_path)
@@ -283,8 +341,27 @@ def process_document(
             preview_pdf_path=preview_pdf_path,
             prechunked_chunks=prechunked_chunks,
             meta_extra=deep_meta,
+            started_at=started_at,
         )
 
+    except SoftTimeLimitExceeded:
+        logger.error("[process] Tác vụ vượt quá 300s — hủy xử lý %s", filename)
+        if document_id:
+            _update_document_status(
+                document_id=document_id,
+                status="error",
+                error_message="Xử lý tài liệu quá thời gian cho phép (>5 phút). Vui lòng thử lại với file nhỏ hơn.",
+            )
+            publish_document_event(
+                document_id,
+                {
+                    "type": "error",
+                    "document_id": document_id,
+                    "message": "Xử lý tài liệu quá thời gian cho phép (>5 phút).",
+                },
+            )
+            log_stage(document_id, "timeout", (time.monotonic() - started_at) * 1000)
+        raise
     except Exception as exc:  # Justified: Docling pipeline may raise unpredictable errors
         logger.exception("[process] Error processing %s (%s): %s", filename, type(exc).__name__, exc)
         if document_id:
@@ -293,6 +370,14 @@ def process_document(
                 document_id=document_id,
                 status="error",
                 error_message=str(exc),
+            )
+            publish_document_event(
+                document_id,
+                {
+                    "type": "error",
+                    "document_id": document_id,
+                    "message": str(exc),
+                },
             )
         raise self.retry(exc=exc, countdown=10)
 
@@ -310,6 +395,7 @@ def _do_full_processing(
     preview_pdf_path: str | None = None,
     prechunked_chunks: list[dict[str, Any]] | None = None,
     meta_extra: dict | None = None,
+    started_at: float | None = None,
 ) -> dict[str, Any]:
     """
     Shared embedding + upsert pipeline.
@@ -319,7 +405,13 @@ def _do_full_processing(
     chunking: Docling chunks become parents (saved to PostgreSQL), each
     parent is split into smaller children for embedding into Qdrant.
     """
-    from .helpers import _smart_chunk, _update_document_status
+    from .helpers import (
+        _smart_chunk,
+        log_stage,
+        _update_document_status,
+        publish_document_event,
+        update_document_progress,
+    )
     from src.services.chunk_splitter import split_into_children
     from src.services.parent_chunk_store import save_parent_chunks
 
@@ -327,6 +419,20 @@ def _do_full_processing(
     chunks_with_pages: list[tuple[str, int]] = []
     chunk_payload_meta: list[dict[str, Any]] = []
     use_parent_child = bool(prechunked_chunks)
+
+    def mark_progress(stage: str, chunks_so_far: int = 0, details: dict[str, Any] | None = None) -> None:
+        if not document_id or started_at is None:
+            return
+        elapsed_ms = (time.monotonic() - started_at) * 1000
+        progress = update_document_progress(
+            document_id=document_id,
+            stage=stage,
+            elapsed_ms=elapsed_ms,
+            chunks_so_far=chunks_so_far,
+            details=details,
+        )
+        log_stage(document_id, stage, elapsed_ms, {"chunks_so_far": chunks_so_far, **(details or {})})
+        publish_document_event(document_id, {"type": "progress", "document_id": document_id, **progress})
 
     if prechunked_chunks:
         # ── Docling path: parent-child chunking ──
@@ -342,7 +448,7 @@ def _do_full_processing(
             except (ValueError, TypeError):
                 page_num = 1
             parent_data.append({
-                "text": text,
+                "content": text,
                 "page_number": page_num,
                 "headings": item.get("headings") or [],
                 "metadata": {
@@ -400,12 +506,14 @@ def _do_full_processing(
 
     if not chunks_with_pages:
         raise ValueError(f"No chunks generated for {filename}")
+    mark_progress("chunk", chunks_so_far=len(chunks_with_pages))
 
     # 2. Embed locally (sentence-transformers)
     from src.worker.chat_tasks import embed_texts
 
     chunk_texts = [ct for ct, _ in chunks_with_pages]
     vectors = embed_texts(chunk_texts)
+    mark_progress("embed", chunks_so_far=len(chunk_texts))
 
     # 3. Build payloads
     payloads: list[dict[str, Any]] = []
@@ -441,6 +549,7 @@ def _do_full_processing(
     from src.core.qdrant_setup import upsert_vectors
     upsert_vectors("port_knowledge", payloads, vectors, ids=vector_ids)
     logger.info(f"[qdrant] Upserted {len(payloads)} vectors for {filename}")
+    mark_progress("upsert", chunks_so_far=len(payloads))
 
     # 4b. Index into Whoosh for BM25 lexical search (Phase 4: Hybrid Search)
     try:
@@ -482,6 +591,30 @@ def _do_full_processing(
             extractor_used=extractor_used,
             metadata=meta,
         )
+        publish_document_event(
+            document_id,
+            {
+                "type": "done",
+                "document_id": document_id,
+                "status": "ready",
+                "stage": "done",
+                "pct": 100,
+                "elapsed_ms": round(((time.monotonic() - started_at) * 1000) if started_at else 0, 1),
+                "chunks_so_far": len(chunks_with_pages),
+                "message": f"Đã xử lý xong {len(chunks_with_pages)} chunks.",
+            },
+        )
+        if started_at is not None:
+            log_stage(
+                document_id,
+                "total",
+                (time.monotonic() - started_at) * 1000,
+                {
+                    "chunks_count": len(chunks_with_pages),
+                    "page_count": page_count,
+                    "file_size_kb": round(os.path.getsize(file_path) / 1024, 1) if os.path.exists(file_path) else 0,
+                },
+            )
 
     return {
         "status": "success",
@@ -511,7 +644,13 @@ def _get_whisper_model():
     return _whisper_model
 
 
-@celery_app.task(name="src.worker.tasks.transcribe_audio", bind=True, max_retries=2)
+@celery_app.task(
+    name="src.worker.tasks.transcribe_audio",
+    bind=True,
+    max_retries=2,
+    soft_time_limit=180,
+    time_limit=240,
+)
 def transcribe_audio(
     self,
     file_path: str,
@@ -519,10 +658,26 @@ def transcribe_audio(
     original_filename: str | None = None,
     document_id: str | None = None,
 ) -> dict[str, Any]:
-    from .helpers import _smart_chunk, _update_document_status
+    from .helpers import _smart_chunk, _update_document_status, log_stage
+    from .helpers import publish_document_event, update_document_progress
 
     filename = original_filename or os.path.basename(file_path)
     logger.info(f"[stt] Transcribing audio: {filename}")
+    started_at = time.monotonic()
+
+    def mark_progress(stage: str, chunks_so_far: int = 0, details: dict[str, Any] | None = None) -> None:
+        if not document_id:
+            return
+        elapsed_ms = (time.monotonic() - started_at) * 1000
+        progress = update_document_progress(
+            document_id=document_id,
+            stage=stage,
+            elapsed_ms=elapsed_ms,
+            chunks_so_far=chunks_so_far,
+            details=details,
+        )
+        log_stage(document_id, stage, elapsed_ms, {"chunks_so_far": chunks_so_far, **(details or {})})
+        publish_document_event(document_id, {"type": "progress", "document_id": document_id, **progress})
 
     try:
         model = _get_whisper_model()
@@ -533,6 +688,7 @@ def transcribe_audio(
         raise self.retry(exc=exc, countdown=10)
 
     try:
+        mark_progress("parse", details={"extractor": "whisper_local"})
         segments_iter, info = model.transcribe(file_path, beam_size=1)
         full_text: list[str] = []
         segment_payloads: list[dict] = []
@@ -549,11 +705,13 @@ def transcribe_audio(
 
         chunks_with_pages = _smart_chunk(transcript, chunk_size=512, overlap=50)
         logger.info(f"[stt] {len(transcript)} chars → {len(chunks_with_pages)} chunks")
+        mark_progress("chunk", chunks_so_far=len(chunks_with_pages))
 
         from src.worker.chat_tasks import embed_texts
 
         chunk_texts = [ct for ct, _ in chunks_with_pages]
         vectors = embed_texts(chunk_texts)
+        mark_progress("embed", chunks_so_far=len(chunk_texts))
 
         payloads = []
         vector_ids = []
@@ -574,6 +732,7 @@ def transcribe_audio(
         from src.core.qdrant_setup import upsert_vectors
         upsert_vectors("port_knowledge", payloads, vectors, ids=vector_ids)
         logger.info(f"[stt] Upserted {len(payloads)} chunks to Qdrant")
+        mark_progress("upsert", chunks_so_far=len(payloads))
 
         if document_id:
             _update_document_status(
@@ -589,6 +748,19 @@ def transcribe_audio(
                     "duration": getattr(info, "duration", None),
                 },
             )
+            publish_document_event(
+                document_id,
+                {
+                    "type": "done",
+                    "document_id": document_id,
+                    "status": "ready",
+                    "stage": "done",
+                    "pct": 100,
+                    "elapsed_ms": round((time.monotonic() - started_at) * 1000, 1),
+                    "chunks_so_far": len(chunks_with_pages),
+                    "message": f"Đã xử lý xong {len(chunks_with_pages)} chunks.",
+                },
+            )
 
         return {
             "status": "success",
@@ -596,10 +768,36 @@ def transcribe_audio(
             "chunks": len(chunks_with_pages),
         }
 
+    except SoftTimeLimitExceeded:
+        logger.error("[stt] Tác vụ phiên âm vượt quá 180s — hủy xử lý %s", filename)
+        if document_id:
+            _update_document_status(
+                document_id=document_id,
+                status="error",
+                error_message="Phiên âm âm thanh quá thời gian cho phép. Vui lòng thử file ngắn hơn.",
+            )
+            publish_document_event(
+                document_id,
+                {
+                    "type": "error",
+                    "document_id": document_id,
+                    "message": "Phiên âm âm thanh quá thời gian cho phép.",
+                },
+            )
+            log_stage(document_id, "timeout", (time.monotonic() - started_at) * 1000)
+        raise
     except Exception as exc:  # Justified: Whisper transcription may raise various internal errors
         logger.exception("[stt] Error transcribing %s (%s): %s", filename, type(exc).__name__, exc)
         if document_id:
             _update_document_status(document_id=document_id, status="error", error_message=str(exc))
+            publish_document_event(
+                document_id,
+                {
+                    "type": "error",
+                    "document_id": document_id,
+                    "message": str(exc),
+                },
+            )
         raise self.retry(exc=exc, countdown=10)
 
 
