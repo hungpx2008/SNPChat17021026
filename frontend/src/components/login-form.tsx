@@ -50,8 +50,8 @@ export function LoginForm() {
       const departmentLabel = t(department as any);
       await login({ email, password, department: departmentLabel });
       router.push(`/chat?department=${encodeURIComponent(t(department as any))}`);
-    } catch (error: any) {
-      setError(error.message ?? "Unable to login. Please try again.");
+    } catch (error: unknown) {
+      setError(error instanceof Error ? error.message : "Unable to login. Please try again.");
     } finally {
       setLoading(false);
     }

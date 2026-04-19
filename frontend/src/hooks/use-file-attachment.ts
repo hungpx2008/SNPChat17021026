@@ -1,10 +1,11 @@
 import { useRef, useState, type ChangeEvent } from "react";
 import { chatBackend } from "@/services/chat-backend";
+import { BackendError } from "@/services/backend-error";
 import type { AttachedFile, Message } from "@/components/chat/types";
 
 export function useFileAttachment(
   userIdentifier: string,
-  setMessages: (updater: (prev: Message[]) => Message[]) => void,
+  addMessages: (...msgs: Message[]) => void,
   setError: (error: string | null) => void,
 ) {
   const [attachedFile, setAttachedFile] = useState<AttachedFile | null>(null);
@@ -34,14 +35,16 @@ export function useFileAttachment(
           role: "bot",
           content: `📄 Đã upload file **${result.filename}** — đang xử lý...\nID: \`${result.document_id}\``,
         };
-        setMessages((prev) => [...prev, uploadMessage]);
+        addMessages(uploadMessage);
         setDocRefreshToken((t) => t + 1);
-      } catch (err: any) {
-        const status = err?.status;
+      } catch (err: unknown) {
+        const status = err instanceof BackendError ? err.status : undefined;
         const detail =
-          err?.detail ||
-          err?.message ||
-          "File đã tồn tại. Bạn có muốn ghi đè không?";
+          err instanceof BackendError
+            ? err.body
+            : err instanceof Error
+              ? err.message
+              : "File đã tồn tại. Bạn có muốn ghi đè không?";
         if (status === 409) {
           try {
             const shouldOverwrite = window.confirm(
@@ -58,16 +61,14 @@ export function useFileAttachment(
                 role: "bot",
                 content: `📄 Đã ghi đè file **${result.filename}** — đang xử lý lại...\nID: \`${result.document_id}\``,
               };
-              setMessages((prev) => [...prev, uploadMessage]);
+              addMessages(uploadMessage);
               setDocRefreshToken((t) => t + 1);
             } else {
-              setMessages((prev) => [
-                ...prev,
-                { id: Date.now(), role: "bot", content: "❌ Đã hủy upload." },
-              ]);
+              addMessages({ id: Date.now(), role: "bot", content: "❌ Đã hủy upload." });
             }
-          } catch (e: any) {
-            setError(`Upload thất bại: ${e?.message || detail}`);
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : detail;
+            setError(`Upload thất bại: ${msg}`);
           }
         } else {
           console.error("Upload failed:", err);

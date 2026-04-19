@@ -6,24 +6,51 @@ Tasks:
   - store_memory: Save long-term memory to Mem0
   - rag_document_search: RAG search across uploaded documents
   - process_feedback: Self-correction via user feedback
+  - summarize_session_history: Async session summarization
 """
+from __future__ import annotations
+
+import json
 import logging
 import os
+<<<<<<< HEAD
 import re
+=======
+import sqlite3
+>>>>>>> 23d80aee50a51a652ef417c465763f3a88f2d49f
 from threading import Lock
 from typing import Any
 from uuid import uuid4
 
+import httpx
+import sqlalchemy.exc
+from qdrant_client.http import exceptions as qdrant_exc
+
+from src.core.constants import (
+    CHAT_CHUNK_OVERLAP,
+    CHAT_CHUNK_SIZE,
+    CHAT_EMBED_TRUNCATE,
+    RAG_FEEDBACK_SIMILARITY,
+    SUMMARY_KEEP_COUNT,
+    SUMMARY_TRIM_TOKENS,
+)
+
 from .celery_app import celery_app
+from .rag.context import _gather_unified_context
+from .rag.search_helpers import (
+    _build_hybrid_context_and_citations,
+    _run_hybrid_search,
+    _save_rag_error,
+    _save_rag_result,
+)
+from .rag.synthesis import (
+    _build_fallback_answer,
+    _format_citations_footer,
+    _sanitize_generated_answer,
+    _synthesize_with_llm,
+)
 
 logger = logging.getLogger(__name__)
-
-BACKEND_INTERNAL_URL = os.getenv("BACKEND_INTERNAL_URL", "http://backend:8000")
-# Mem0 is now local (no HTTP) — see src.core.mem0_local
-
-# Minimum cosine similarity score for a retrieved chunk to be included in RAG context.
-# Chunks below this threshold are discarded even if they are "top-k".
-RAG_SCORE_THRESHOLD = float(os.getenv("RAG_SCORE_THRESHOLD", "0.35"))
 
 # ---------------------------------------------------------------------------
 # Module-level singleton for the HuggingFace embedding model used in retrieval.
@@ -37,7 +64,7 @@ _hf_embed_model_lock = Lock()
 def _get_hf_embed_model():
     """Return a cached SentenceTransformer instance (loaded once per Celery worker)."""
     global _hf_embed_model, _hf_embed_model_name  # noqa: PLW0603
-    model_name = os.getenv("EMBEDDING_MODEL", "thanhtantran/Vietnamese_Embedding_v2")
+    model_name = os.getenv("EMBEDDING_MODEL", "AITeamVN/Vietnamese_Embedding_v2")
     if _hf_embed_model is None or _hf_embed_model_name != model_name:
         with _hf_embed_model_lock:
             if _hf_embed_model is None or _hf_embed_model_name != model_name:
@@ -63,6 +90,38 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return model.encode(texts, normalize_embeddings=True).tolist()
 
 
+<<<<<<< HEAD
+=======
+def _load_message_llm_settings(source_message_id: str | None) -> dict[str, Any] | None:
+    """Load per-message runtime LLM settings stored by the frontend settings sheet."""
+    if not source_message_id:
+        return None
+
+    try:
+        from src.core.database_pool import db_pool
+
+        row = db_pool.execute_query_fetchone(
+            "SELECT metadata FROM chat_messages WHERE id = :msg_id",
+            {"msg_id": source_message_id},
+        )
+        if not row:
+            return None
+
+        metadata = row[0]
+        if isinstance(metadata, str):
+            metadata = json.loads(metadata)
+
+        if isinstance(metadata, dict):
+            llm_settings = metadata.get("llm_settings")
+            if isinstance(llm_settings, dict):
+                return llm_settings
+    except Exception as exc:
+        logger.warning("[RAG] Could not load runtime llm settings: %s", exc)
+
+    return None
+
+
+>>>>>>> 23d80aee50a51a652ef417c465763f3a88f2d49f
 # =============================================================================
 # 🔴 QUEUE: chat_priority — Chat real-time
 # =============================================================================
@@ -87,7 +146,7 @@ def process_chat_response(
         from .helpers import _smart_chunk
 
         # 1. Chunk text
-        chunks = _smart_chunk(content, chunk_size=512, overlap=50)
+        chunks = _smart_chunk(content, chunk_size=CHAT_CHUNK_SIZE, overlap=CHAT_CHUNK_OVERLAP)
         if not chunks:
             return {"status": "ok", "message_id": message_id, "chunks": 0}
 
@@ -122,8 +181,11 @@ def process_chat_response(
             logger.info(f"[chat_priority] Stored {len(points)} chunks for message {message_id}")
 
         return {"status": "ok", "message_id": message_id, "chunks": len(points)}
-    except Exception as exc:
-        logger.exception(f"Error processing chat response: {exc}")
+    except (qdrant_exc.UnexpectedResponse, qdrant_exc.ResponseHandlingException) as exc:
+        logger.exception("Qdrant error processing chat response: %s", exc)
+        raise self.retry(exc=exc, countdown=2 ** self.request.retries)
+    except (OSError, RuntimeError) as exc:
+        logger.exception("Embedding/model error processing chat response: %s", exc)
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
 
 
@@ -155,12 +217,18 @@ def store_memory(
         logger.info(f"[mem0] Memory stored for user {user_id}")
         return {"status": "ok", "user_id": user_id}
 
-    except Exception as exc:
-        logger.exception(f"Error storing memory: {exc}")
+    except sqlite3.OperationalError as exc:
+        # SQLite DB path not accessible in Docker — fail fast, don't clog queue
+        logger.warning("Mem0 SQLite unavailable (skipping): %s", exc)
+        return {"status": "skipped", "reason": "sqlite_unavailable", "user_id": user_id}
+
+    except Exception as exc:  # Justified: Mem0 local lib may raise unpredictable errors
+        logger.exception("Error storing memory (%s): %s", type(exc).__name__, exc)
         raise self.retry(exc=exc, countdown=2 ** self.request.retries)
 
 
 # ---------------------------------------------------------------------------
+<<<<<<< HEAD
 # RAG helper functions (extracted to reduce cognitive complexity)
 # ---------------------------------------------------------------------------
 
@@ -752,6 +820,8 @@ def _build_hybrid_context_and_citations(
 
 
 # ---------------------------------------------------------------------------
+=======
+>>>>>>> 23d80aee50a51a652ef417c465763f3a88f2d49f
 # RAG Celery task
 # ---------------------------------------------------------------------------
 
@@ -763,185 +833,59 @@ def rag_document_search(
     user_id: str | None = None,
     department: str | None = None,
     target_message_id: str | None = None,
+    source_message_id: str | None = None,
 ) -> dict[str, Any]:
-    """
-    RAG Document Search — find and synthesize answers from uploaded documents.
-    """
+    """RAG Document Search — find and synthesize answers from uploaded documents."""
     logger.info(f"[RAG] Search for session {session_id}: {question[:50]}...")
     try:
-        # ── Query Enhancement: classify and enhance before search ──
-        from src.services.search.query_enhancer import QueryEnhancer, QueryStrategy
-        from src.services.search.hybrid_search import HybridSearchService
-
-        enhancer = QueryEnhancer()
-        enhanced = enhancer.enhance(question)
-        logger.info(
-            f"[RAG] Query strategy: {enhanced.strategy.value}, "
-            f"sub-queries: {len(enhanced.queries)}"
+        # 1. Search: enhance query → cache → hybrid → fallback → parent resolve
+        hybrid_results, enhanced = _run_hybrid_search(
+            question, user_id, department, embed_fn=embed_query,
         )
-        if enhanced.hyde_output:
-            logger.info(f"[RAG] HyDE output: {enhanced.hyde_output[:100]}...")
+        runtime_llm_settings = _load_message_llm_settings(source_message_id)
 
-        # ── Semantic Cache: check for cached search results ──
-        cache_hit = False
-        hybrid_results = []
-        try:
-            import asyncio
-            from src.services.search.semantic_cache import SemanticCache
-            _cache = SemanticCache()
-            _loop = asyncio.new_event_loop()
-            cached = _loop.run_until_complete(_cache.get(question, user_id))
-            _loop.close()
-            if cached is not None:
-                from src.services.search.hybrid_search import SearchResult
-                hybrid_results = [
-                    SearchResult(**item) for item in cached
-                ]
-                cache_hit = True
-                logger.info(
-                    f"[RAG] Semantic cache HIT: {len(hybrid_results)} results"
-                )
-        except Exception as e:
-            logger.warning(f"[RAG] Semantic cache lookup failed: {e}")
-
-        # ── Hybrid Search: only if cache missed ──
-        if not cache_hit:
-            hybrid = HybridSearchService()
-            hybrid_results = hybrid.search(
-                query=enhanced.queries if len(enhanced.queries) > 1 else enhanced.queries[0],
-                user_id=user_id,
-                department=department,
-                limit=5,
-                score_threshold=RAG_SCORE_THRESHOLD,
-            )
-
-            # Store results in cache for next time
-            if hybrid_results:
-                try:
-                    import asyncio
-                    from src.services.search.semantic_cache import SemanticCache
-                    _cache = SemanticCache()
-                    serialized = [
-                        {
-                            "doc_id": r.doc_id, "title": r.title,
-                            "content": r.content, "tags": r.tags,
-                            "score": r.score, "semantic_score": r.semantic_score,
-                            "lexical_score": r.lexical_score,
-                            "rrf_score": r.rrf_score, "boost_score": r.boost_score,
-                            "source": r.source, "metadata": r.metadata,
-                            "parent_id": r.parent_id,
-                        }
-                        for r in hybrid_results
-                    ]
-                    _loop = asyncio.new_event_loop()
-                    _loop.run_until_complete(_cache.put(question, serialized, user_id))
-                    _loop.close()
-                    logger.info(f"[RAG] Cached {len(serialized)} results for future queries")
-                except Exception as e:
-                    logger.warning(f"[RAG] Semantic cache store failed: {e}")
-
-        # ── Fallback: if hybrid returns nothing, try pure semantic ──
-        if not hybrid_results:
-            logger.info(f"[RAG] Hybrid returned 0 results, falling back to pure semantic")
-            hybrid_results = _fallback_semantic_search(question, user_id, department)
-
-        # ── Before building context, resolve parent chunks ──
-        hybrid_results = _resolve_parent_content(hybrid_results)
-
-        # ── Build context + citations from hybrid results ──
+        # 2. Build context + citations from search results
         citations, context_blocks = _build_hybrid_context_and_citations(hybrid_results)
         context_text = "\n\n---\n\n".join(context_blocks).strip()
         logger.info(f"[RAG CONTEXT (Hybrid)]:\n{context_text}\n{'='*50}")
 
-        # 4. Synthesize via LLM (with fallback)
+        # 3. Synthesize via LLM (with fallback)
         result_text = ""
         llm_error: str | None = None
         if context_text:
             try:
-                unified_ctx = _gather_unified_context(question, session_id, user_id, department)
+                unified_ctx = _gather_unified_context(
+                    question, session_id, user_id, department,
+                )
                 result_text = _synthesize_with_llm(
-                    question,
-                    context_text,
+                    question, context_text,
                     long_term_block=unified_ctx.get("long_term_block", ""),
                     summary_block=unified_ctx.get("summary_block", ""),
                     recent_block=unified_ctx.get("recent_block", ""),
                     system_prompt=unified_ctx.get("system_prompt", ""),
+                    llm_settings=runtime_llm_settings,
                 )
-            except Exception as e:
+            except (httpx.HTTPError, KeyError, ValueError) as e:
                 llm_error = str(e)
-                logger.error(
-                    f"[RAG] LLM synthesis FAILED for session={session_id} "
-                    f"model={os.getenv('LLM_MODEL','?')} "
-                    f"base={os.getenv('OPENAI_BASE_URL','?')} "
-                    f"error={e}"
-                )
-        if not result_text:
-            if llm_error:
-                result_text = _build_fallback_answer([])
-            else:
-                result_text = _build_fallback_answer(context_blocks)
+                logger.error("[RAG] LLM synthesis FAILED: %s", e)
 
-        logger.info(f"[RAG RAW LLM OUTPUT]:\n{result_text}\n{'='*50}")
+        if not result_text:
+            result_text = _build_fallback_answer([] if llm_error else context_blocks)
+
         result_text = _sanitize_generated_answer(result_text)
-        logger.info(f"[RAG AFTER SANITIZE]:\n{result_text}\n{'='*50}")
         result_text += _format_citations_footer(citations)
 
-        # 5. Save via Backend API
-        from src.core.http_client import get_http_client
-        http_client = get_http_client(timeout=10.0)
-        if target_message_id:
-            # Update placeholder message created by regenerate
-            resp = http_client.patch(
-                f"{BACKEND_INTERNAL_URL}/messages/{target_message_id}/content",
-                json={"content": result_text},
-            )
-        else:
-            resp = http_client.post(
-                f"{BACKEND_INTERNAL_URL}/sessions/{session_id}/messages",
-                json={"content": result_text, "role": "assistant"},
-            )
-        resp.raise_for_status()
-
-        # 6. Store retrieved chunk IDs in message metadata for accurate feedback
-        try:
-            msg_id = target_message_id or resp.json().get("id")
-            if msg_id and hybrid_results:
-                chunk_ids = [r.doc_id for r in hybrid_results if r.doc_id]
-                if chunk_ids:
-                    metadata_patch = {"rag_chunk_ids": chunk_ids}
-                    # Store query enhancement info for debugging/analytics
-                    metadata_patch["query_strategy"] = enhanced.strategy.value
-                    if enhanced.strategy == QueryStrategy.DECOMPOSED:
-                        metadata_patch["sub_queries"] = enhanced.queries
-                    http_client.patch(
-                        f"{BACKEND_INTERNAL_URL}/messages/{msg_id}/metadata",
-                        json=metadata_patch,
-                    )
-        except Exception as e:
-            logger.warning(f"[RAG] Could not store chunk_ids in message metadata: {e}")
+        # 4. Save answer + metadata via Backend API
+        _save_rag_result(result_text, session_id, target_message_id, hybrid_results, enhanced)
 
         logger.info(f"[RAG] Saved answer for session {session_id}")
         from .helpers import publish_task_complete
         publish_task_complete(session_id)
         return {"status": "success", "question": question, "citations": len(citations)}
 
-    except Exception as exc:
-        logger.exception(f"Error in RAG document search: {exc}")
-        try:
-            from src.core.http_client import get_http_client
-            error_content = "Xin lỗi, hệ thống gặp sự cố khi tìm kiếm tài liệu. Vui lòng thử lại sau ạ."
-            if target_message_id:
-                get_http_client(timeout=10.0).patch(
-                    f"{BACKEND_INTERNAL_URL}/messages/{target_message_id}/content",
-                    json={"content": error_content},
-                )
-            else:
-                get_http_client(timeout=10.0).post(
-                    f"{BACKEND_INTERNAL_URL}/sessions/{session_id}/messages",
-                    json={"content": error_content, "role": "assistant"},
-                )
-        except Exception:
-            pass
+    except Exception as exc:  # Justified: RAG pipeline orchestrator — must always save error response
+        logger.exception("Error in RAG document search (%s): %s", type(exc).__name__, exc)
+        _save_rag_error(session_id, target_message_id)
         from .helpers import publish_task_complete
         publish_task_complete(session_id)
         return {"status": "error", "message": str(exc)}
@@ -996,14 +940,13 @@ def process_feedback(
                 points=stored_chunk_ids,
             )
             downgraded = len(stored_chunk_ids)
-            logger.info(f"[feedback] Marked {downgraded} exact chunk(s) as low_quality via stored IDs")
+            logger.info(
+                f"[feedback] Marked {downgraded} exact chunk(s) as low_quality via stored IDs"
+            )
 
         else:
             # Strategy B: fallback — embed the question (not the answer) to find source chunks.
-            # Note: we embed msg_content (the bot answer); a better proxy would be the user
-            # question, but we don't have it here without a DB join. This is still better
-            # than the previous approach of embedding the answer with wrong intent.
-            query_vector = embed_query(msg_content[:500])
+            query_vector = embed_query(msg_content[:CHAT_EMBED_TRUNCATE])
 
             matches = qdrant.query_points(
                 collection_name="port_knowledge",
@@ -1012,19 +955,27 @@ def process_feedback(
             ).points
 
             for point in matches:
-                if point.score and point.score > 0.7:
+                if point.score and point.score > RAG_FEEDBACK_SIMILARITY:
                     qdrant.set_payload(
                         collection_name="port_knowledge",
                         payload={"quality": "low", "dislike_reason": reason or "unknown"},
                         points=[point.id],
                     )
                     downgraded += 1
-                    logger.info(f"[feedback] Marked vector {point.id} as low_quality (fallback similarity)")
+                    logger.info(
+                        f"[feedback] Marked vector {point.id} as low_quality "
+                        "(fallback similarity)"
+                    )
 
-        return {"status": "ok", "action": "vectors_downgraded", "message_id": message_id, "downgraded": downgraded}
+        return {
+            "status": "ok",
+            "action": "vectors_downgraded",
+            "message_id": message_id,
+            "downgraded": downgraded,
+        }
 
-    except Exception as exc:
-        logger.exception(f"Error processing feedback: {exc}")
+    except (sqlalchemy.exc.SQLAlchemyError, qdrant_exc.UnexpectedResponse) as exc:
+        logger.exception("Error processing feedback: %s", exc)
         return {"status": "error", "message": str(exc)}
 
 
@@ -1036,8 +987,8 @@ def process_feedback(
 def summarize_session_history(
     self,
     session_id: str,
-    keep_count: int = 12,
-    trim_tokens: int = 6_000,
+    keep_count: int = SUMMARY_KEEP_COUNT,
+    trim_tokens: int = SUMMARY_TRIM_TOKENS,
 ) -> dict[str, Any]:
     """
     Tóm tắt bất đồng bộ lịch sử hội thoại (Smart Summarization).
@@ -1093,8 +1044,8 @@ def summarize_session_history(
 
         # 4. Call LLM with improved S2B-ported prompt
         openai_key = os.getenv("OPENAI_API_KEY", "")
-        openai_base = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
-        llm_model = os.getenv("LLM_MODEL", "openai/gpt-5-nano")
+        openai_base = os.getenv("OPENAI_BASE_URL", "https://ezaiapi.com")
+        llm_model = os.getenv("LLM_MODEL_LIGHT", "gpt-5.3-codex")
 
         from src.utils.summarization import SUMMARY_PROMPT_VI
         from src.core.http_client import get_http_client
@@ -1136,6 +1087,9 @@ def summarize_session_history(
 
         return {"status": "ok", "session_id": session_id, "summary_length": len(summary)}
 
-    except Exception as exc:
-        logger.exception(f"Error summarizing session: {exc}")
+    except (httpx.HTTPError, KeyError, ValueError) as exc:
+        logger.exception("LLM/parsing error summarizing session: %s", exc)
+        return {"status": "error", "message": str(exc)}
+    except sqlalchemy.exc.SQLAlchemyError as exc:
+        logger.exception("DB error summarizing session: %s", exc)
         return {"status": "error", "message": str(exc)}

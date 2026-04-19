@@ -2,12 +2,12 @@ import { useCallback, useState } from "react";
 import { chatBackend, type BackendMessage, type BranchInfo } from "@/services/chat-backend";
 import type { Message } from "@/components/chat/types";
 
-type SetMessages = React.Dispatch<React.SetStateAction<Message[]>>;
+type ReplaceMessages = (msgs: Message[]) => void;
 type MapBackendMessage = (message: BackendMessage) => Message;
 
 export function useConversationTree(
   sessionId: string | null,
-  setMessages: SetMessages,
+  replaceMessages: ReplaceMessages,
   mapBackendMessage: MapBackendMessage,
 ) {
   const [branchInfoMap, setBranchInfoMap] = useState<Record<string, BranchInfo>>({});
@@ -58,7 +58,7 @@ export function useConversationTree(
       try {
         const updatedMessages = await chatBackend.navigateBranch(sessionId, messageId, direction);
         const mapped = updatedMessages.map(mapBackendMessage);
-        setMessages(mapped);
+        replaceMessages(mapped);
         // Refresh branch info after navigation
         await fetchAllBranchInfo(mapped);
       } catch (err) {
@@ -67,7 +67,7 @@ export function useConversationTree(
         setBranchLoading(false);
       }
     },
-    [sessionId, mapBackendMessage, setMessages, fetchAllBranchInfo],
+    [sessionId, mapBackendMessage, replaceMessages, fetchAllBranchInfo],
   );
 
   const editMessage = useCallback(

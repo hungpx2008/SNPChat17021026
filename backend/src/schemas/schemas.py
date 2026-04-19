@@ -57,6 +57,8 @@ class SessionSchema(BaseModel):
 
 class SessionWithMessages(SessionSchema):
     messages: list[MessageSchema] = Field(default_factory=list)
+    has_more: bool = False
+    oldest_id: UUID | None = None
 
 
 class EditMessageRequest(BaseModel):

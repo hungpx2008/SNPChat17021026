@@ -15,26 +15,47 @@ type MemorySearchResult = {
 };
 
 type MemoryClient = {
-  search: (query: string, options?: { user_id?: string; limit?: number }) => Promise<MemorySearchResult[]>;
+  search: (
+    query: string,
+    options?: { user_id?: string; limit?: number; signal?: AbortSignal; timeoutMs?: number },
+  ) => Promise<MemorySearchResult[]>;
   add: (payload: { user_id?: string; text: string; metadata?: Record<string, unknown> }) => Promise<unknown>;
 };
 
 const BACKEND_URL = process.env.BACKEND_INTERNAL_URL || process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+const MEMORY_TIMEOUT_MS = 1_500;
 
-async function backendPost<T>(path: string, body: unknown): Promise<T> {
+async function backendPost<T>(
+  path: string,
+  body: unknown,
+  options?: { timeoutMs?: number; signal?: AbortSignal },
+): Promise<T> {
   const url = `${BACKEND_URL}${path.startsWith("/") ? path : `/${path}`}`;
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body ?? {}),
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`Backend memory API error ${resp.status}: ${text}`);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(
+    () => controller.abort("timeout"),
+    options?.timeoutMs ?? MEMORY_TIMEOUT_MS,
+  );
+  const forwardAbort = () => controller.abort("aborted");
+  options?.signal?.addEventListener("abort", forwardAbort);
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body ?? {}),
+      signal: controller.signal,
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`Backend memory API error ${resp.status}: ${text}`);
+    }
+    return (await resp.json()) as T;
+  } finally {
+    options?.signal?.removeEventListener("abort", forwardAbort);
+    clearTimeout(timeoutId);
   }
-  return (await resp.json()) as T;
 }
 
 const memoryClient: MemoryClient = {
@@ -46,6 +67,10 @@ const memoryClient: MemoryClient = {
           query,
           user_id: options?.user_id,
           limit: options?.limit ?? 5,
+        },
+        {
+          signal: options?.signal,
+          timeoutMs: options?.timeoutMs,
         },
       );
       const rawList = Array.isArray(result) ? result : result?.results ?? [];

@@ -262,7 +262,8 @@ class HybridSearchService:
         """Run Qdrant semantic search using direct client (no LlamaIndex)."""
         try:
             from src.core.qdrant_setup import get_qdrant_client
-            from src.worker.chat_tasks import _build_qdrant_filter, embed_query
+            from src.worker.chat_tasks import embed_query
+            from src.worker.rag.search_helpers import _build_qdrant_filter
 
             query_vector = embed_query(query)
             qdrant = get_qdrant_client()
@@ -282,9 +283,13 @@ class HybridSearchService:
                     continue
 
                 payload = point.payload or {}
+<<<<<<< HEAD
                 # Document chunks are stored in Qdrant under `text`.
                 # Fall back to `content` for any legacy payloads.
                 content = payload.get("text") or payload.get("content", "")
+=======
+                content = payload.get("text", "")
+>>>>>>> 23d80aee50a51a652ef417c465763f3a88f2d49f
 
                 results.append({
                     "doc_id": str(point.id) if point.id else "",

@@ -5,7 +5,8 @@ import { getContextualHelp } from "@/ai/flows/contextual-help";
 import { getMultimodalHelp } from "@/ai/flows/multimodal-help";
 import { getMemory } from "@/lib/memory";
 import { chatBackend, type BackendMessage } from "@/services/chat-backend";
-import { localOpenAI, LOCAL_LLM_MODEL } from "@/ai/localClient";
+import { createChatCompletionWithFallback, LOCAL_LLM_MODEL } from "@/ai/localClient";
+import { type ChatRuntimeLlmSettings } from "@/lib/llm-settings";
 
 type HelpResult = Awaited<ReturnType<typeof getContextualHelp>>;
 
@@ -24,7 +25,19 @@ type GetHelpParams = {
   sessionId: string;
   userId: string;
   photoDataUri?: string;
+  llmSettings?: ChatRuntimeLlmSettings;
+  useInternalData?: boolean;
+  usePersonalData?: boolean;
 };
+
+const SEMANTIC_SEARCH_TIMEOUT_MS = 2_500;
+const MEMORY_SEARCH_TIMEOUT_MS = 1_500;
+const CHITCHAT_PATTERN =
+  /\b(chào|hello|hi|hey|alo|xin chào|cảm ơn|thank|thanks|ok|okay|bye|tạm biệt|thời tiết|weather)\b/i;
+const INTERNAL_DATA_PATTERN =
+  /\b(tài liệu|tai lieu|document|pdf|file|quy định|quy trình|biểu giá|giá|bảng giá|tariff|policy|hợp đồng|cảng|phòng|container|hàng|nội bộ|internal)\b/i;
+const PERSONAL_DATA_PATTERN =
+  /\b(tôi|mình|tao|em|anh|chị|sếp|my|me|remember|nhớ|hồ sơ|profile|sở thích|preference)\b/i;
 
 function formatHistory(messages: BackendMessage[]): string {
   if (!messages.length) return "";
@@ -33,12 +46,33 @@ function formatHistory(messages: BackendMessage[]): string {
     .join("\n");
 }
 
+function shouldSearchInternalData(question: string, enabled: boolean): boolean {
+  if (!enabled) return false;
+  const normalized = question.trim();
+  if (!normalized) return false;
+  if (normalized.length <= 20 && !INTERNAL_DATA_PATTERN.test(normalized)) return false;
+  if (CHITCHAT_PATTERN.test(normalized) && !INTERNAL_DATA_PATTERN.test(normalized)) return false;
+  return INTERNAL_DATA_PATTERN.test(normalized) || normalized.length >= 30;
+}
+
+function shouldSearchPersonalData(question: string, enabled: boolean): boolean {
+  if (!enabled) return false;
+  const normalized = question.trim();
+  if (!normalized) return false;
+  if (normalized.length < 12) return false;
+  if (CHITCHAT_PATTERN.test(normalized) && !PERSONAL_DATA_PATTERN.test(normalized)) return false;
+  return PERSONAL_DATA_PATTERN.test(normalized);
+}
+
 export async function getHelp({
   question,
   department,
   sessionId,
   userId,
   photoDataUri,
+  llmSettings,
+  useInternalData = true,
+  usePersonalData = true,
 }: GetHelpParams): Promise<HelpResult> {
   const memoryUserId = userId || "test-user";
   const truncate = (text: string, limit = 400) =>
@@ -66,32 +100,61 @@ export async function getHelp({
 
   const requestPromise = (async () => {
     try {
-      let contextResults: any[] = [];
-      let mem0Memories: any[] = [];
+      let contextResults: SearchResult[] = [];
+      let mem0Memories: Array<{ text?: string; memory?: string }> = [];
+      const shouldUseInternalContext = shouldSearchInternalData(question, useInternalData);
+      const shouldUsePersonalContext = shouldSearchPersonalData(question, usePersonalData);
 
-      // Run semantic search once + direct Mem0 memory fetch in parallel
-      const [searchResult, memoryResult] = await Promise.allSettled([
-        chatBackend.semanticSearch({
-          user_id: memoryUserId,
-          department,
-          query: question,
-          limit: 6,
-        }),
-        (async () => {
-          const mem = await getMemory();
-          return mem.search(question, { user_id: memoryUserId, limit: 10 });
-        })(),
-      ]);
+      if (shouldUseInternalContext || shouldUsePersonalContext) {
+        const semanticSearchController = new AbortController();
+        const semanticSearchTimeout = setTimeout(
+          () => semanticSearchController.abort("timeout"),
+          SEMANTIC_SEARCH_TIMEOUT_MS,
+        );
+        const memorySearchController = new AbortController();
+        const memorySearchTimeout = setTimeout(
+          () => memorySearchController.abort("timeout"),
+          MEMORY_SEARCH_TIMEOUT_MS,
+        );
 
-      if (searchResult.status === 'fulfilled') {
-        contextResults = searchResult.value || [];
-      } else {
-        console.error("[getHelp] Semantic search failed", searchResult.reason);
-      }
-      if (memoryResult.status === 'fulfilled') {
-        mem0Memories = memoryResult.value;
-      } else {
-        console.error("[getHelp] Mem0 memory fetch failed", memoryResult.reason);
+        const [searchResult, memoryResult] = await Promise.allSettled([
+          shouldUseInternalContext
+            ? chatBackend.semanticSearch({
+              user_id: memoryUserId,
+              department,
+              query: question,
+              limit: 6,
+            }, {
+              signal: semanticSearchController.signal,
+              timeoutMs: SEMANTIC_SEARCH_TIMEOUT_MS,
+            })
+            : Promise.resolve([]),
+          shouldUsePersonalContext
+            ? (async () => {
+              const mem = await getMemory();
+              return mem.search(question, {
+                user_id: memoryUserId,
+                limit: 10,
+                signal: memorySearchController.signal,
+                timeoutMs: MEMORY_SEARCH_TIMEOUT_MS,
+              });
+            })()
+            : Promise.resolve([]),
+        ]);
+
+        clearTimeout(semanticSearchTimeout);
+        clearTimeout(memorySearchTimeout);
+
+        if (searchResult.status === 'fulfilled') {
+          contextResults = searchResult.value || [];
+        } else {
+          console.error("[getHelp] Semantic search failed", searchResult.reason);
+        }
+        if (memoryResult.status === 'fulfilled') {
+          mem0Memories = memoryResult.value;
+        } else {
+          console.error("[getHelp] Mem0 memory fetch failed", memoryResult.reason);
+        }
       }
 
       // ===== HYBRID CONTEXT WINDOW (3+3+summary) =====
@@ -113,7 +176,7 @@ export async function getHelp({
       }
 
       // Tier 2: from single semantic search above (short_term only)
-      const relevantOldChunks = (contextResults || []).filter((r: any) => r.source === 'short_term').slice(0, 3);
+      const relevantOldChunks = (contextResults || []).filter((r: SearchResult) => r.source === 'short_term').slice(0, 3);
 
       const contextBlocks: ContextBlock[] = [];
 
@@ -189,8 +252,15 @@ export async function getHelp({
           department,
           photoDataUri,
           context: contextBlocks,
+          llmSettings,
         })
-        : await getContextualHelp({ question, department, context: contextBlocks, user_id: memoryUserId });
+        : await getContextualHelp({
+          question,
+          department,
+          context: contextBlocks,
+          user_id: memoryUserId,
+          llmSettings,
+        });
 
       // NOTE: We no longer call memory.add here. 
       // The backend 'appendMessage' service already handles persisting to Mem0.
@@ -231,7 +301,7 @@ export async function getSuggestions(
   botResponse: string,
 ): Promise<string[]> {
   try {
-    const completion = await localOpenAI.chat.completions.create({
+    const completion = await createChatCompletionWithFallback({
       model: LOCAL_LLM_MODEL,
       temperature: 0.5,
       max_tokens: 120,

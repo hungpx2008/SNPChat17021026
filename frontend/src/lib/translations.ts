@@ -50,6 +50,11 @@ export const translations = {
     settings: "Settings",
     internalData: "Internal Data",
     personalData: "Personal Data",
+    fallbackEnabled: "Fallback API",
+    fallbackDescription: "Retry with this API/model when Claude hits quota or rate limits.",
+    fallbackBaseUrl: "Fallback Base URL",
+    fallbackApiKey: "Fallback API Key",
+    fallbackModel: "Fallback Model",
     
     // Welcome Message
     welcomeMessage: "Hello! How can I help you in the {department} today?",
@@ -121,6 +126,11 @@ export const translations = {
     settings: "Cấu hình",
     internalData: "Dữ liệu nội bộ",
     personalData: "Dữ liệu cá nhân",
+    fallbackEnabled: "API dự phòng",
+    fallbackDescription: "Tự chuyển sang API/model này khi Claude hết quota hoặc dính rate limit.",
+    fallbackBaseUrl: "Base URL dự phòng",
+    fallbackApiKey: "API key dự phòng",
+    fallbackModel: "Model dự phòng",
 
     // Welcome Message
     welcomeMessage: "Xin chào! Tôi có thể giúp gì cho bạn ở {department} hôm nay?",

@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     qdrant_http_url: str = Field("http://localhost:6333", alias="QDRANT_URL")
     qdrant_grpc_url: str | None = Field(None, alias="QDRANT_GRPC_URL")
     embedding_dimension: int = Field(1024, alias="EMBEDDING_DIMENSION")
-    embedding_model: str = Field("thanhtantran/Vietnamese_Embedding_v2", alias="EMBEDDING_MODEL")
+    embedding_model: str = Field("AITeamVN/Vietnamese_Embedding_v2", alias="EMBEDDING_MODEL")
     embedding_device: str = Field("cpu", alias="EMBEDDING_DEVICE")
     chat_max_sessions: int = Field(100, alias="CHAT_MAX_SESSIONS")
     chat_cache_window: int = Field(20, alias="CHAT_CACHE_WINDOW")
@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     openai_base_url: str = Field("https://openrouter.ai/api/v1", alias="OPENAI_BASE_URL")
     openrouter_api_key: str | None = Field(None, alias="OPENROUTER_API_KEY")
     llm_model: str = Field("openai/gpt-5-nano", alias="LLM_MODEL")
+    llm_fallback_enabled: bool = Field(False, alias="LLM_FALLBACK_ENABLED")
+    llm_fallback_base_url: str | None = Field(None, alias="LLM_FALLBACK_BASE_URL")
+    llm_fallback_api_key: str | None = Field(None, alias="LLM_FALLBACK_API_KEY")
+    llm_fallback_model: str | None = Field(None, alias="LLM_FALLBACK_MODEL")
 
     allowed_origins: Any = Field(
         default_factory=lambda: [

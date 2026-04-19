@@ -22,7 +22,7 @@ QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY")
 
 # Provider selection (default to Gemini if you only have Google key)
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")
-LLM_MODEL = os.environ.get("LLM_MODEL", "openai/gpt-5-nano")
+LLM_MODEL = os.environ.get("LLM_MODEL", "claude-opus-4-6")
 EMBEDDER_PROVIDER = os.environ.get("EMBEDDER_PROVIDER", "openai")
 EMBEDDER_MODEL = os.environ.get("EMBEDDER_MODEL", "text-embedding-3-large")
 EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM", "3072"))

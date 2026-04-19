@@ -18,6 +18,9 @@ SYSTEM_PROMPT_OVERHEAD = 120  # from S2B
 TOOL_CALL_OVERHEAD = 60  # from S2B
 
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    "claude-opus-4-6": 200_000,
+    "gpt-5.3-codex": 128_000,
+    # Legacy entries (backward compat)
     "openai/gpt-4o-mini": 128_000,
     "openai/gpt-5-nano": 128_000,
 }

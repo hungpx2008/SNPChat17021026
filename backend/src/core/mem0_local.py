@@ -13,6 +13,8 @@ Provides a singleton mem0.Memory instance and helper functions for:
 
 import logging
 import os
+import concurrent.futures
+from pathlib import Path
 
 from mem0 import Memory
 
@@ -26,13 +28,19 @@ def _build_config() -> dict:
     qdrant_host = os.environ.get("QDRANT_HOST", "qdrant")
     qdrant_port = int(os.environ.get("QDRANT_PORT", "6333"))
     qdrant_collection = os.environ.get("QDRANT_COLLECTION", "mem0_memories")
-    embedding_dim = int(os.environ.get("EMBEDDING_DIM", "1024"))
+    embedding_dim = int(
+        os.environ.get("EMBEDDING_DIMENSION")
+        or os.environ.get("EMBEDDING_DIM")
+        or "384"
+    )
 
     llm_provider = os.environ.get("LLM_PROVIDER", "openai")
     llm_model = os.environ.get("LLM_MODEL", "openai/gpt-4o-mini")
     embedder_provider = os.environ.get("EMBEDDER_PROVIDER", "huggingface")
-    embedder_model = os.environ.get(
-        "EMBEDDER_MODEL", "AITeamVN/Vietnamese_Embedding_v2"
+    embedder_model = (
+        os.environ.get("EMBEDDER_MODEL")
+        or os.environ.get("EMBEDDING_MODEL")
+        or "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     )
 
     openai_api_key = os.environ.get("OPENAI_API_KEY")
@@ -41,7 +49,8 @@ def _build_config() -> dict:
     openrouter_api_base = os.environ.get("OPENROUTER_API_BASE")
     hf_token = os.environ.get("HF_TOKEN")
 
-    history_db_path = os.environ.get("HISTORY_DB_PATH", "/app/history/history.db")
+    history_db_path = os.environ.get("HISTORY_DB_PATH", "/tmp/chatsnp/history.db")
+    Path(history_db_path).parent.mkdir(parents=True, exist_ok=True)
 
     api_key = openrouter_api_key or openai_api_key
 
@@ -202,3 +211,21 @@ def delete_all_memories(
     if run_id:
         params["run_id"] = run_id
     mem.delete_all(**params)
+
+
+def mem0_health_check(timeout_s: float = 5.0) -> bool:
+    """Return True when mem0 lazy init succeeds and Qdrant is reachable."""
+    def _check() -> bool:
+        get_memory()
+        from src.core.qdrant_setup import get_qdrant_client
+        client = get_qdrant_client()
+        client.get_collections()
+        return True
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_check)
+            return future.result(timeout=timeout_s)
+    except Exception as exc:
+        logger.warning("[mem0-health] Check failed: %s", exc)
+        return False

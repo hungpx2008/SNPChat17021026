@@ -11,17 +11,20 @@ import os
 import shutil
 import mimetypes
 import unicodedata
+import json
+import asyncio
 
 logger = logging.getLogger(__name__)
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import get_db_session
+from src.core.redis_client import get_redis
 from src.models.models import Document
 from src.schemas.schemas import DocumentSchema, DocumentUploadResponse
 
@@ -218,6 +221,69 @@ async def get_document_status(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     return document
+
+
+@router.get("/{document_id}/stream")
+async def stream_document_progress(
+    document_id: UUID,
+    user_id: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db_session),
+) -> Any:
+    """SSE stream for document upload progress updates."""
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    document = result.scalar_one_or_none()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if user_id and document.user_id and document.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    async def event_generator():
+        redis = get_redis()
+        pubsub = redis.pubsub()
+        await pubsub.subscribe(f"document:{document_id}")
+
+        try:
+            if document.meta and document.meta.get("progress"):
+                initial = {
+                    "type": "progress",
+                    "document_id": str(document_id),
+                    **document.meta.get("progress", {}),
+                }
+                yield f"data: {json.dumps(initial)}\n\n"
+            elif document.status in {"ready", "error"}:
+                initial = {
+                    "type": "done" if document.status == "ready" else "error",
+                    "document_id": str(document_id),
+                    "status": document.status,
+                    "message": document.error_message or "",
+                }
+                yield f"data: {json.dumps(initial)}\n\n"
+                return
+
+            deadline = asyncio.get_running_loop().time() + 120
+            while asyncio.get_running_loop().time() < deadline:
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if not message:
+                    await asyncio.sleep(0.2)
+                    continue
+                data = message.get("data")
+                if not data:
+                    continue
+                yield f"data: {data}\n\n"
+                parsed = json.loads(data)
+                if parsed.get("type") in {"done", "error"}:
+                    break
+            else:
+                yield f"data: {json.dumps({'type': 'timeout', 'document_id': str(document_id)})}\n\n"
+        finally:
+            await pubsub.unsubscribe(f"document:{document_id}")
+            await pubsub.close()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.delete("/{document_id}/cancel")

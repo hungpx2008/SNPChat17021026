@@ -30,8 +30,8 @@ export function SignupForm() {
     try {
       await signup({ email, password });
       router.push("/");
-    } catch (error: any) {
-      setError(error.message ?? "Unable to create account. Please try again.");
+    } catch (error: unknown) {
+      setError(error instanceof Error ? error.message : "Unable to create account. Please try again.");
     } finally {
       setLoading(false);
     }

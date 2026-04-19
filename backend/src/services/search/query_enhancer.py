@@ -122,9 +122,9 @@ class QueryEnhancer:
         Args:
             model: LLM model name for OpenRouter. Defaults to LLM_MODEL env var.
         """
-        self._model = model or os.getenv("LLM_MODEL", "openai/gpt-4o-mini")
+        self._model = model or os.getenv("LLM_MODEL_LIGHT", "gpt-5.3-codex")
         self._api_key = os.getenv("OPENAI_API_KEY", "")
-        self._api_base = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+        self._api_base = os.getenv("OPENAI_BASE_URL", "https://ezaiapi.com")
 
     def enhance(self, query: str) -> EnhancedQuery:
         """Analyze query and apply appropriate enhancement strategy.

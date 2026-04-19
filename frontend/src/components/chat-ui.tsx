@@ -31,6 +31,13 @@ import { useFileAttachment } from "@/hooks/use-file-attachment";
 import { useChatSearch } from "@/hooks/use-chat-search";
 import { useSessionStream } from "@/hooks/use-session-stream";
 import { useConversationTree } from "@/hooks/use-conversation-tree";
+import {
+  buildRuntimeLlmSettingsPayload,
+  DEFAULT_CHAT_RUNTIME_LLM_SETTINGS,
+  normalizeChatRuntimeLlmSettings,
+} from "@/lib/llm-settings";
+
+const LLM_SETTINGS_STORAGE_KEY = "chatsnp-llm-settings-v1";
 
 export function ChatUI({ department }: { department: string }) {
   const { t, language, setLanguage } = useLanguage();
@@ -58,6 +65,7 @@ export function ChatUI({ department }: { department: string }) {
   const [agentMode, setAgentMode] = useState<AgentMode>("auto");
   const [useInternalData, setUseInternalData] = useState(true);
   const [usePersonalData, setUsePersonalData] = useState(true);
+  const [llmSettings, setLlmSettings] = useState(DEFAULT_CHAT_RUNTIME_LLM_SETTINGS);
   const [waitingForTask, setWaitingForTask] = useState(false);
   // State riêng cho SSE: được set ngay khi dispatch task (không chờ activeChatId sync)
   const [streamSessionId, setStreamSessionId] = useState<string | null>(null);
@@ -71,10 +79,15 @@ export function ChatUI({ department }: { department: string }) {
   // ─── Custom hooks ──────────────────────────────────────────────
   const {
     messages,
-    setMessages,
+    addMessages,
+    replaceMessages,
+    updateMessages,
     messagesLoading,
     messagesEndRef,
     loadSessionMessages,
+    loadOlderMessages,
+    hasMoreMessages,
+    loadingOlderMessages,
     welcomeMessage,
     mapBackendMessage,
     resetMessages,
@@ -82,9 +95,10 @@ export function ChatUI({ department }: { department: string }) {
 
   const {
     chatHistory,
-    setChatHistory,
     activeChatId,
-    setActiveChatId,
+    selectChat,
+    addSession,
+    updateSession,
     sessionsLoading,
     loadSessions,
     handleNewChat: _handleNewChat,
@@ -99,7 +113,7 @@ export function ChatUI({ department }: { department: string }) {
     docRefreshToken,
     handleFileAttachClick,
     handleFileChange,
-  } = useFileAttachment(userIdentifier, setMessages, setError);
+  } = useFileAttachment(userIdentifier, addMessages, setError);
 
   const {
     searchTerm,
@@ -122,7 +136,7 @@ export function ChatUI({ department }: { department: string }) {
     regenerateMessage,
     startEditing,
     cancelEditing,
-  } = useConversationTree(activeChatId, setMessages, mapBackendMessage);
+  } = useConversationTree(activeChatId, replaceMessages, mapBackendMessage);
 
   // ─── SSE stream for Celery task completion ─────────────────────
   // Sync ref với state để useSessionStream dùng được session ID mới nhất
@@ -136,14 +150,11 @@ export function ChatUI({ department }: { department: string }) {
       try {
         const finalMessages = await loadSessionMessages(sessionId);
         if (finalMessages) {
-          setMessages(finalMessages); // ← Cập nhật UI chat ngay lập tức
-          setChatHistory((prev) =>
-            prev.map((chat) =>
-              chat.id === sessionId
-                ? { ...chat, messages: finalMessages }
-                : chat,
-            ),
-          );
+          replaceMessages(finalMessages); // ← Cập nhật UI chat ngay lập tức
+          updateSession(sessionId, (chat) => ({
+            ...chat,
+            messages: finalMessages,
+          }));
         }
       } catch {
         // loadSessionMessages already logs errors
@@ -152,7 +163,7 @@ export function ChatUI({ department }: { department: string }) {
       setStreamSessionId(null); // reset SSE session sau khi nhận xong
       setSubmitting(false);
     }
-  }, [loadSessionMessages, setMessages, setChatHistory]);
+  }, [loadSessionMessages, replaceMessages, updateSession]);
 
   useSessionStream(streamSessionId, waitingForTask, handleSSEMessageReady);
 
@@ -223,13 +234,37 @@ export function ChatUI({ department }: { department: string }) {
   useEffect(() => {
     loadSessions().then((sessions) => {
       if (sessions && sessions.length === 0) {
-        setActiveChatId(null);
+        selectChat(null);
         resetMessages();
       }
     }).catch(() => {
       setError("Failed to load sessions. Please try again.");
     });
-  }, [loadSessions, setActiveChatId, resetMessages]);
+  }, [loadSessions, selectChat, resetMessages]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    try {
+      const raw = window.localStorage.getItem(LLM_SETTINGS_STORAGE_KEY);
+      if (raw) {
+        setLlmSettings(normalizeChatRuntimeLlmSettings(JSON.parse(raw)));
+      }
+    } catch (error) {
+      console.warn("Could not load saved LLM fallback settings", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.localStorage.setItem(
+      LLM_SETTINGS_STORAGE_KEY,
+      JSON.stringify(normalizeChatRuntimeLlmSettings(llmSettings)),
+    );
+  }, [llmSettings]);
 
   // ─── Bridging callbacks (hooks → UI) ──────────────────────────
   const handleNewChat = useCallback(() => {
@@ -238,9 +273,9 @@ export function ChatUI({ department }: { department: string }) {
 
   const handleSelectChat = useCallback(
     async (chatId: string) => {
-      await _handleSelectChat(chatId, loadSessionMessages, setMessages, clearSearch);
+      await _handleSelectChat(chatId, loadSessionMessages, replaceMessages, clearSearch);
     },
-    [_handleSelectChat, loadSessionMessages, setMessages, clearSearch],
+    [_handleSelectChat, loadSessionMessages, replaceMessages, clearSearch],
   );
 
   const handleDeleteChat = useCallback(
@@ -251,7 +286,7 @@ export function ChatUI({ department }: { department: string }) {
   );
 
   const handleSearchResultSelect = useCallback(
-    async (result: { metadata: Record<string, any> }) => {
+    async (result: { metadata: Record<string, unknown> }) => {
       const sessionId = result.metadata?.session_id as string | undefined;
       if (sessionId) {
         await handleSelectChat(sessionId);
@@ -264,6 +299,18 @@ export function ChatUI({ department }: { department: string }) {
     logout();
     router.push("/login");
   }, [logout, router]);
+
+  const handleLlmSettingsChange = useCallback(
+    (patch: Partial<typeof llmSettings>) => {
+      setLlmSettings((current) =>
+        normalizeChatRuntimeLlmSettings({
+          ...current,
+          ...patch,
+        }),
+      );
+    },
+    [],
+  );
 
   // ─── Form submit ──────────────────────────────────────────────
   const handleFormSubmit = useCallback(
@@ -291,17 +338,14 @@ export function ChatUI({ department }: { department: string }) {
           });
           sessionId = createdSession.id;
           activeSessionIdRef.current = sessionId; // ← cập nhật ref ngay, không chờ React re-render
-          setActiveChatId(sessionId);
-          setChatHistory((prev) => [
-            {
-              id: createdSession.id,
-              title: createdSession.title ?? sessionTitle ?? t("newChatTooltip"),
-              messages: [],
-              department: createdSession.department ?? department,
-              created_at: createdSession.created_at,
-            },
-            ...prev,
-          ]);
+          selectChat(sessionId);
+          addSession({
+            id: createdSession.id,
+            title: createdSession.title ?? sessionTitle ?? t("newChatTooltip"),
+            messages: [],
+            department: createdSession.department ?? department,
+            created_at: createdSession.created_at,
+          });
         } catch (err) {
           console.error("Failed to create session", err);
           setError("Unable to create a new chat. Please try again.");
@@ -341,21 +385,15 @@ export function ChatUI({ department }: { department: string }) {
           ),
       };
 
-      setMessages((prev) => [...prev, userMessage, thinkingMessage]);
-      setChatHistory((prev) =>
-        prev.map((chat) =>
-          chat.id === sessionId
-            ? {
-                ...chat,
-                title:
-                  chat.title && chat.title !== t("newChatTooltip")
-                    ? chat.title
-                    : sessionTitle ?? chat.title,
-                messages: [...chat.messages, userMessage],
-              }
-            : chat,
-        ),
-      );
+      addMessages(userMessage, thinkingMessage);
+      updateSession(sessionId, (chat) => ({
+        ...chat,
+        title:
+          chat.title && chat.title !== t("newChatTooltip")
+            ? chat.title
+            : sessionTitle ?? chat.title,
+        messages: [...chat.messages, userMessage],
+      }));
 
       // Clear form
       formRef.current?.reset();
@@ -364,17 +402,25 @@ export function ChatUI({ department }: { department: string }) {
         textareaRef.current.style.height = "auto";
       }
       const fileToSend = attachedFile;
+      const runtimeLlmSettings = buildRuntimeLlmSettingsPayload(llmSettings);
+      const userMessageMetadata = {
+        ...(fileToSend ? { attachment: fileToSend } : {}),
+        ...(runtimeLlmSettings ? { llm_settings: runtimeLlmSettings } : {}),
+      };
       setAttachedFile(null);
 
       try {
         const appendResult = await chatBackend.appendMessage(sessionId, {
           role: "user",
           content: userInput,
-          metadata: fileToSend ? { attachment: fileToSend } : undefined,
+          metadata:
+            Object.keys(userMessageMetadata).length > 0
+              ? userMessageMetadata
+              : undefined,
           mode: agentMode,
         });
 
-        const taskDispatched = (appendResult as any).task_dispatched === true;
+        const taskDispatched = appendResult.task_dispatched === true;
 
         if (taskDispatched) {
           // SSE sẽ xử lý response — set streamSessionId ngay để SSE connect đúng session
@@ -389,6 +435,9 @@ export function ChatUI({ department }: { department: string }) {
             sessionId,
             userId: userIdentifier,
             photoDataUri: fileToSend?.dataUri,
+            llmSettings: runtimeLlmSettings,
+            useInternalData,
+            usePersonalData,
           });
           const botResponse = llmResult.response;
 
@@ -418,11 +467,15 @@ export function ChatUI({ department }: { department: string }) {
       loadSessionMessages,
       t,
       userIdentifier,
+      useInternalData,
+      usePersonalData,
       submitting,
-      setActiveChatId,
-      setChatHistory,
-      setMessages,
+      selectChat,
+      addSession,
+      updateSession,
+      addMessages,
       setAttachedFile,
+      llmSettings,
     ],
   );
 
@@ -465,6 +518,8 @@ export function ChatUI({ department }: { department: string }) {
           setUseInternalData={setUseInternalData}
           usePersonalData={usePersonalData}
           setUsePersonalData={setUsePersonalData}
+          llmSettings={llmSettings}
+          onLlmSettingsChange={handleLlmSettingsChange}
           sidebarOpen={sidebarOpen}
         />
         {error && (
@@ -482,6 +537,11 @@ export function ChatUI({ department }: { department: string }) {
         <ChatMessageList
           messages={messages}
           messagesEndRef={messagesEndRef}
+          hasMoreMessages={hasMoreMessages}
+          loadingOlderMessages={loadingOlderMessages}
+          onLoadOlderMessages={
+            activeChatId ? () => loadOlderMessages(activeChatId) : undefined
+          }
           onPreviewAttachment={(att) => setPreviewFile({ url: att.url, name: att.filename })}
           branchInfoMap={branchInfoMap}
           onNavigateBranch={handleNavigateBranch}

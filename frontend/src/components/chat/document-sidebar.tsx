@@ -1,13 +1,13 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { FileText, RefreshCw, Search, CheckCircle2, XCircle, Loader2, Eye, X } from 'lucide-react';
+import { FileText, RefreshCw, Search, CheckCircle2, XCircle, Loader2, Eye, type LucideIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
-import { chatBackend, type DocumentInfo } from '@/services/chat-backend';
+import { chatBackend, type DocumentInfo, type DocumentProgressEvent } from '@/services/chat-backend';
 import { FilePreviewModal } from '../file-preview-modal';
 
 interface DocumentSidebarProps {
@@ -18,10 +18,19 @@ interface DocumentSidebarProps {
     refreshToken?: number;
 }
 
-const STATUS_CONFIG: Record<string, { icon: any; label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline'; animate: boolean }> = {
+const STATUS_CONFIG: Record<string, { icon: LucideIcon; label: string; variant: 'default' | 'secondary' | 'destructive' | 'outline'; animate: boolean }> = {
     processing: { icon: Loader2, label: 'Đang xử lý...', variant: 'secondary', animate: true },
     ready:      { icon: CheckCircle2, label: 'Sẵn sàng', variant: 'default', animate: false },
     error:      { icon: XCircle, label: 'Lỗi', variant: 'destructive', animate: false },
+};
+
+const STAGE_LABELS: Record<string, string> = {
+    preflight: 'Kiểm tra dịch vụ...',
+    parse: 'Phân tích tài liệu...',
+    chunk: 'Chia nhỏ nội dung...',
+    embed: 'Tạo vector nhúng...',
+    upsert: 'Lưu vào kho tri thức...',
+    done: 'Hoàn tất!',
 };
 
 export function DocumentSidebar({ userId, onAskAboutDocument, visible, refreshToken }: DocumentSidebarProps) {
@@ -29,6 +38,7 @@ export function DocumentSidebar({ userId, onAskAboutDocument, visible, refreshTo
     const [loading, setLoading] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
     const [previewDoc, setPreviewDoc] = useState<DocumentInfo | null>(null);
+    const [progressMap, setProgressMap] = useState<Record<string, DocumentProgressEvent>>({});
 
     // Build preview/download URL from document id
     const previewUrl = useMemo(
@@ -36,42 +46,96 @@ export function DocumentSidebar({ userId, onAskAboutDocument, visible, refreshTo
         [previewDoc],
     );
 
-    const loadDocuments = useCallback(async () => {
+    const loadDocuments = useCallback(async (signal?: AbortSignal) => {
         if (!userId) return;
         setLoading(true);
         try {
-            const docs = await chatBackend.listDocuments(userId);
-            setDocuments(docs);
+            const docs = await chatBackend.listDocuments(userId, signal);
+            if (!signal?.aborted) {
+                setDocuments(docs);
+            }
         } catch (err) {
+            // Ignore AbortError — expected when component unmounts or effect re-runs
+            if (err instanceof DOMException && err.name === 'AbortError') return;
             console.error('Failed to load documents', err);
         } finally {
-            setLoading(false);
+            if (!signal?.aborted) {
+                setLoading(false);
+            }
         }
     }, [userId]);
 
+    // Load documents when sidebar becomes visible OR when refreshToken bumps (upload done)
     useEffect(() => {
-        if (visible) {
-            void loadDocuments();
-        }
-    }, [visible, loadDocuments]);
+        if (!visible) return;
 
-    // Reload when external trigger bumps (e.g., after upload completes)
-    useEffect(() => {
-        if (visible) {
-            void loadDocuments();
-        }
-    }, [refreshToken, visible, loadDocuments]);
+        const controller = new AbortController();
+        void loadDocuments(controller.signal);
+        return () => controller.abort('cleanup');
+    }, [visible, refreshToken, loadDocuments]);
 
     // Auto-refresh processing documents every 5s until done
     useEffect(() => {
         const hasActive = documents.some(d => d.status === 'processing');
         if (!hasActive || !visible) return;
 
+        const controller = new AbortController();
         const interval = setInterval(() => {
-            void loadDocuments();
+            void loadDocuments(controller.signal);
         }, 5000);
-        return () => clearInterval(interval);
+        return () => {
+            clearInterval(interval);
+            controller.abort('cleanup');
+        };
     }, [documents, visible, loadDocuments]);
+
+    useEffect(() => {
+        setProgressMap((prev) => {
+            const next = { ...prev };
+            for (const doc of documents) {
+                if (doc.status === 'processing' && doc.meta?.progress) {
+                    next[doc.id] = { document_id: doc.id, type: 'progress', ...doc.meta.progress };
+                }
+                if (doc.status !== 'processing') {
+                    delete next[doc.id];
+                }
+            }
+            return next;
+        });
+    }, [documents]);
+
+    useEffect(() => {
+        if (!visible) return;
+
+        const activeDocs = documents.filter((doc) => doc.status === 'processing');
+        if (activeDocs.length === 0) return;
+
+        const streams = activeDocs.map((doc) => {
+            const es = new EventSource(chatBackend.getDocumentProgressStreamUrl(doc.id, userId));
+            es.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data) as DocumentProgressEvent;
+                    setProgressMap((prev) => ({ ...prev, [doc.id]: data }));
+                    if (data.type === 'done' || data.type === 'error') {
+                        es.close();
+                        void loadDocuments();
+                    }
+                    if (data.type === 'timeout') {
+                        es.close();
+                        void loadDocuments();
+                    }
+                } catch (error) {
+                    console.error('Invalid document progress event', error);
+                }
+            };
+            es.onerror = () => {
+                es.close();
+            };
+            return es;
+        });
+
+        return () => streams.forEach((stream) => stream.close());
+    }, [documents, loadDocuments, userId, visible]);
 
     const filteredDocs = searchTerm
         ? documents.filter(d => d.filename.toLowerCase().includes(searchTerm.toLowerCase()))
@@ -204,13 +268,33 @@ export function DocumentSidebar({ userId, onAskAboutDocument, visible, refreshTo
                                                 {doc.status === 'processing' && (
                                                     <>
                                                         <div className="mt-2 p-2 rounded-md bg-purple-50 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800">
+                                                            {(() => {
+                                                                const progress = progressMap[doc.id] || doc.meta?.progress;
+                                                                const pct = Math.max(5, Math.min(100, progress?.pct ?? 15));
+                                                                const stage = progress?.stage || 'parse';
+                                                                const stageLabel = STAGE_LABELS[stage] || 'Đang xử lý...';
+                                                                const chunkInfo = progress?.chunks_so_far
+                                                                    ? ` ${progress.chunks_so_far} chunks`
+                                                                    : '';
+                                                                return (
+                                                                    <>
                                                             <p className="text-[11px] text-purple-700 dark:text-purple-300 flex items-center gap-1.5">
                                                                 <Loader2 size={12} className="animate-spin shrink-0" />
-                                                                Đang phân tích tài liệu qua Docling... đợi chút nhé
+                                                                {stageLabel}{chunkInfo}
                                                             </p>
                                                             <div className="mt-1.5 w-full bg-purple-200 dark:bg-purple-800 rounded-full h-1.5 overflow-hidden">
-                                                                <div className="h-full w-3/5 bg-purple-500 rounded-full animate-pulse" />
+                                                                <div
+                                                                    className="h-full bg-purple-500 rounded-full transition-all duration-500"
+                                                                    style={{ width: `${pct}%` }}
+                                                                />
                                                             </div>
+                                                            <div className="mt-1 flex items-center justify-between text-[10px] text-purple-700/80 dark:text-purple-300/80">
+                                                                <span>{pct}%</span>
+                                                                <span>{Math.round((progress?.elapsed_ms ?? 0) / 1000)}s</span>
+                                                            </div>
+                                                                    </>
+                                                                );
+                                                            })()}
                                                         </div>
                                                         <Button
                                                             variant="ghost"

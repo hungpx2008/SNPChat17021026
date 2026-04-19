@@ -17,6 +17,8 @@ from src.api import feedback as feedback_router
 from src.api import tts as tts_router
 from src.api import memories as memories_router
 from src.core.config import get_settings
+from src.core.constants import CORS_ALLOW_HEADERS, CORS_ALLOW_METHODS
+from src.core.cors import build_cors_headers
 from src.core.db import get_engine, create_tables
 from src.core.qdrant_setup import get_qdrant_client
 from src.models import models  # noqa: F401 — register ORM models with Base.metadata
@@ -49,8 +51,8 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.allowed_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=CORS_ALLOW_METHODS,
+        allow_headers=CORS_ALLOW_HEADERS,
     )
 
     # Global exception handler — NEVER leak internal details to client
@@ -58,18 +60,7 @@ def create_app() -> FastAPI:
     async def global_exception_handler(request, exc):
         logger.exception("Unhandled exception:")
 
-        origin = request.headers.get("origin", "")
-        allow_origin = "*" if "*" in settings.allowed_origins else (
-            origin if origin in settings.allowed_origins else (
-                settings.allowed_origins[0] if settings.allowed_origins else "*"
-            )
-        )
-        headers = {
-            "Access-Control-Allow-Origin": allow_origin,
-            "Access-Control-Allow-Methods": "*",
-            "Access-Control-Allow-Headers": "*",
-            "Access-Control-Allow-Credentials": "true",
-        }
+        headers = build_cors_headers(request)
 
         return JSONResponse(
             status_code=500,

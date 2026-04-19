@@ -1,3 +1,6 @@
+import { BackendError } from './backend-error';
+import { REQUEST_TIMEOUT_MS, UPLOAD_TIMEOUT_MS } from '@/lib/constants';
+
 const API_BASE_URL = (
   (typeof window === 'undefined' ? process.env.BACKEND_INTERNAL_URL : undefined) ||
   process.env.NEXT_PUBLIC_BACKEND_URL ||
@@ -40,39 +43,60 @@ async function request<T>(
   path: string,
   options: RequestInit = {},
   query?: Record<string, string | number | undefined>,
+  timeoutMs: number = REQUEST_TIMEOUT_MS,
+  /** Optional external signal — when aborted the request is cancelled immediately. */
+  externalSignal?: AbortSignal,
 ): Promise<T> {
   const url = buildRequestUrl(path, query);
   const hasBody = typeof options?.body !== 'undefined';
-  const response = await fetch(url.toString(), {
-    ...options,
-    headers: {
-      ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
-      ...(options.headers ?? {}),
-    },
-    cache: 'no-store',
-  });
 
-  if (!response.ok) {
-    let errorText = await response.text();
-    try {
-      const errorJson = JSON.parse(errorText);
-      // Handle nested error structure from backend (e.g. { status: { error: "..." } })
-      if (errorJson.status?.error) {
-        errorText = errorJson.status.error;
-      } else if (errorJson.detail) {
-        errorText = typeof errorJson.detail === 'string' ? errorJson.detail : JSON.stringify(errorJson.detail);
-      }
-    } catch {
-      // ignore JSON parse error, use raw text
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort('timeout'), timeoutMs);
+
+  // Forward external abort → internal controller
+  const onExternalAbort = () => controller.abort(externalSignal?.reason ?? 'cancelled');
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      clearTimeout(timeoutId);
+      throw new DOMException('signal is aborted', 'AbortError');
     }
-    throw new Error(
-      `Backend request failed: ${response.status} ${response.statusText} - ${errorText}`,
-    );
+    externalSignal.addEventListener('abort', onExternalAbort, { once: true });
   }
-  if (response.status === 204) {
-    return null as T;
+
+  try {
+    const response = await fetch(url.toString(), {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
+        ...(options.headers ?? {}),
+      },
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      let errorText = await response.text();
+      try {
+        const errorJson = JSON.parse(errorText);
+        // Handle nested error structure from backend (e.g. { status: { error: "..." } })
+        if (errorJson.status?.error) {
+          errorText = errorJson.status.error;
+        } else if (errorJson.detail) {
+          errorText = typeof errorJson.detail === 'string' ? errorJson.detail : JSON.stringify(errorJson.detail);
+        }
+      } catch {
+        // ignore JSON parse error, use raw text
+      }
+      throw new BackendError(response.status, response.statusText, errorText, url);
+    }
+    if (response.status === 204) {
+      return null as T;
+    }
+    return (await response.json()) as T;
+  } finally {
+    clearTimeout(timeoutId);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
   }
-  return (await response.json()) as T;
 }
 
 export interface BackendSession {
@@ -95,21 +119,26 @@ export interface BackendMessage {
   parent_message_id?: string | null;
   branch_index?: number;
   is_active_branch?: boolean;
+  task_dispatched?: boolean;
+  intent_type?: 'none' | 'chat' | 'sql' | 'rag';
 }
 
 export interface BackendSessionWithMessages extends BackendSession {
   messages: BackendMessage[];
+  has_more: boolean;
+  oldest_id: string | null;
 }
 
 type FetchSessionOptions = {
   limit?: number;
+  beforeId?: string;
 };
 
 export interface SearchResult {
   text: string;
   score: number;
   source: string;
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
 }
 
 export interface DocumentInfo {
@@ -119,8 +148,25 @@ export interface DocumentInfo {
   chunk_count: number;
   extractor_used: string | null;
   error_message: string | null;
+  meta?: {
+    progress?: DocumentProgressEvent;
+    [key: string]: unknown;
+  };
   created_at: string;
   updated_at: string;
+}
+
+export interface DocumentProgressEvent {
+  type?: 'progress' | 'done' | 'error' | 'timeout';
+  document_id?: string;
+  status?: string;
+  stage?: string;
+  pct?: number;
+  elapsed_ms?: number;
+  chunks_so_far?: number;
+  updated_at?: string;
+  message?: string;
+  details?: Record<string, unknown>;
 }
 
 export interface Attachment {
@@ -173,13 +219,19 @@ export const chatBackend = {
     sessionId: string,
     options?: FetchSessionOptions,
   ): Promise<BackendSessionWithMessages> {
-    const query = options?.limit !== undefined ? { limit: options.limit } : undefined;
+    const query =
+      options?.limit !== undefined || options?.beforeId
+        ? {
+            limit: options?.limit,
+            before_id: options?.beforeId,
+          }
+        : undefined;
     return request<BackendSessionWithMessages>(`/sessions/${sessionId}`, undefined, query);
   },
 
   async appendMessage(
     sessionId: string,
-    payload: { role: 'user' | 'assistant' | 'system'; content: string; metadata?: any; mode?: 'auto' | 'chat' | 'sql' | 'rag' },
+    payload: { role: 'user' | 'assistant' | 'system'; content: string; metadata?: Record<string, unknown>; mode?: 'auto' | 'chat' | 'sql' | 'rag' },
   ): Promise<BackendMessage> {
     return request<BackendMessage>(`/sessions/${sessionId}/messages`, {
       method: 'POST',
@@ -192,11 +244,11 @@ export const chatBackend = {
     department?: string | null;
     query: string;
     limit?: number;
-  }): Promise<SearchResult[]> {
+  }, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<SearchResult[]> {
     return request<SearchResult[]>('/sessions/search', {
       method: 'POST',
       body: JSON.stringify(payload),
-    });
+    }, undefined, options?.timeoutMs, options?.signal);
   },
 
   // ----- Document Upload APIs -----
@@ -214,39 +266,49 @@ export const chatBackend = {
     }
 
     const url = buildRequestUrl('/upload');
-    const response = await fetch(url, {
-      method: 'POST',
-      body: formData,
-      cache: 'no-store',
-    });
-    if (!response.ok) {
-      let errorDetail: string | null = null;
-      const contentType = response.headers.get('content-type') || '';
-      if (contentType.includes('application/json')) {
-        try {
-          const json = await response.json();
-          errorDetail = json.detail || json.message || JSON.stringify(json);
-        } catch {
-          // ignore
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        let errorDetail: string | null = null;
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          try {
+            const json = await response.json();
+            errorDetail = json.detail || json.message || JSON.stringify(json);
+          } catch {
+            // ignore
+          }
         }
-      }
-      if (!errorDetail) {
-        try {
-          errorDetail = await response.text();
-        } catch {
-          errorDetail = 'Unknown error';
+        if (!errorDetail) {
+          try {
+            errorDetail = await response.text();
+          } catch {
+            errorDetail = 'Unknown error';
+          }
         }
+        throw new BackendError(
+          response.status,
+          response.statusText,
+          errorDetail || 'Upload failed',
+          url,
+        );
       }
-      const error: any = new Error(errorDetail || 'Upload failed');
-      error.status = response.status;
-      error.detail = errorDetail;
-      throw error;
+      return response.json();
+    } finally {
+      clearTimeout(timeoutId);
     }
-    return response.json();
   },
 
-  async listDocuments(userId: string): Promise<DocumentInfo[]> {
-    return request<DocumentInfo[]>('/upload', undefined, { user_id: userId });
+  async listDocuments(userId: string, signal?: AbortSignal): Promise<DocumentInfo[]> {
+    return request<DocumentInfo[]>('/upload', undefined, { user_id: userId }, REQUEST_TIMEOUT_MS, signal);
   },
 
   async getDocumentStatus(documentId: string): Promise<DocumentInfo> {
@@ -264,6 +326,10 @@ export const chatBackend = {
   /** Build the direct URL to preview/download a document file. */
   getDocumentDownloadUrl(documentId: string): string {
     return buildRequestUrl(`/upload/${documentId}/download`);
+  },
+
+  getDocumentProgressStreamUrl(documentId: string, userId?: string): string {
+    return buildRequestUrl(`/upload/${documentId}/stream`, { user_id: userId });
   },
 
   async submitFeedback(

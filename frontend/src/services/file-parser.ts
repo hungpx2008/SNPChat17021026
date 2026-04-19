@@ -28,7 +28,7 @@ export async function extractTextFromFile(dataUri: string): Promise<ParsedConten
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
         const content = await page.getTextContent();
-        text += content.items.map((it: any) => it.str).join(' ') + '\n';
+        text += content.items.map((it: { str: string }) => it.str).join(' ') + '\n';
       }
       console.log('[file-parser] Parsed PDF length', text.length);
       return { type: 'document', content: text.trim() };

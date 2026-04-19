@@ -75,14 +75,15 @@ def fetch_parent_content(parent_ids: list[str]) -> dict[str, str]:
     placeholders = ", ".join(f":id_{i}" for i in range(len(parent_ids)))
     params = {f"id_{i}": pid for i, pid in enumerate(parent_ids)}
 
-    rows = db_pool.fetch_all(
+    rows = db_pool.execute_query_fetchall(
         f"SELECT id, content FROM chunk_parents WHERE id IN ({placeholders})",
         params,
     )
 
     result = {pid: "" for pid in parent_ids}  # Default empty for missing
     for row in rows:
-        row_id = str(row["id"]) if not isinstance(row["id"], str) else row["id"]
-        result[row_id] = row["content"]
+        # SQLAlchemy Row may be tuple-like; use index access for safety
+        row_id = str(row[0]) if not isinstance(row[0], str) else row[0]
+        result[row_id] = row[1]
 
     return result

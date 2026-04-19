@@ -5,6 +5,7 @@ These are NOT tasks themselves — just utility functions used by
 chat_tasks, data_tasks, and media_tasks.
 """
 import base64
+from datetime import datetime, timezone
 import json
 import logging
 import os
@@ -14,6 +15,16 @@ from typing import Any
 import redis as sync_redis
 
 logger = logging.getLogger(__name__)
+perf_logger = logging.getLogger("chatsnp.perf")
+
+UPLOAD_STAGES = ["preflight", "parse", "chunk", "embed", "upsert"]
+STAGE_WEIGHTS = {
+    "preflight": 5,
+    "parse": 25,
+    "chunk": 15,
+    "embed": 35,
+    "upsert": 20,
+}
 
 def _extract_text_from_image(file_path: repr) -> str:
     """
@@ -131,6 +142,17 @@ def publish_task_complete(session_id: str, event: str = "message_ready") -> None
         logger.info(f"[pubsub] Published '{event}' for session {session_id}")
     except Exception as exc:
         logger.warning(f"[pubsub] Failed to publish event: {exc}")
+
+
+def publish_document_event(document_id: str, payload: dict[str, Any]) -> None:
+    """Publish upload progress/status to Redis Pub/Sub for SSE consumers."""
+    try:
+        redis_url = os.getenv("REDIS_URL", os.getenv("CELERY_BROKER_URL", "redis://redis:6379/0"))
+        r = sync_redis.from_url(redis_url)
+        r.publish(f"document:{document_id}", json.dumps(payload))
+        logger.debug(f"[pubsub] Published document event for {document_id}: {payload.get('type')}")
+    except Exception as exc:
+        logger.warning(f"[pubsub] Failed to publish document event: {exc}")
 
 
 def _process_tables_in_text(text: str) -> str:
@@ -301,9 +323,16 @@ def _update_document_status(
             updates.append("error_message = :error_message")
             params["error_message"] = error_message
         if metadata is not None:
-            import json
+            existing = db_pool.execute_query_fetchone(
+                "SELECT metadata FROM documents WHERE id = :doc_id",
+                {"doc_id": document_id},
+            )
+            existing_metadata = existing[0] if existing and existing[0] else {}
+            if not isinstance(existing_metadata, dict):
+                existing_metadata = {}
+            merged_metadata = {**existing_metadata, **metadata}
             updates.append("metadata = :metadata")
-            params["metadata"] = json.dumps(metadata)
+            params["metadata"] = json.dumps(merged_metadata)
 
         sql = f"UPDATE documents SET {', '.join(updates)} WHERE id = :doc_id"
         db_pool.execute_query(sql, params)
@@ -311,3 +340,67 @@ def _update_document_status(
         logger.info(f"[db] Updated document {document_id} → status={status}")
     except Exception as e:
         logger.error(f"[db] Failed to update document status: {e}")
+
+
+def update_document_progress(
+    document_id: str,
+    stage: str,
+    elapsed_ms: float,
+    chunks_so_far: int = 0,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Persist document progress under metadata.progress and return the payload."""
+    from src.core.database_pool import db_pool
+
+    stage_key = stage if stage in STAGE_WEIGHTS else "parse"
+    pct = 0
+    for current_stage in UPLOAD_STAGES:
+        pct += STAGE_WEIGHTS[current_stage]
+        if current_stage == stage_key:
+            break
+
+    progress = {
+        "stage": stage_key,
+        "pct": min(100, pct),
+        "elapsed_ms": round(elapsed_ms, 1),
+        "chunks_so_far": chunks_so_far,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if details:
+        progress["details"] = details
+
+    existing = db_pool.execute_query_fetchone(
+        "SELECT metadata FROM documents WHERE id = :doc_id",
+        {"doc_id": document_id},
+    )
+    existing_metadata = existing[0] if existing and existing[0] else {}
+    if not isinstance(existing_metadata, dict):
+        existing_metadata = {}
+    existing_metadata["progress"] = progress
+
+    db_pool.execute_query(
+        "UPDATE documents SET metadata = :metadata, updated_at = NOW() WHERE id = :doc_id",
+        {
+            "doc_id": document_id,
+            "metadata": json.dumps(existing_metadata),
+        },
+    )
+    return progress
+
+
+def log_stage(
+    document_id: str,
+    stage: str,
+    elapsed_ms: float,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Emit a structured timing log for upload pipeline stages."""
+    payload: dict[str, Any] = {
+        "event": "stage_timing",
+        "document_id": document_id,
+        "stage": stage,
+        "elapsed_ms": round(elapsed_ms, 1),
+    }
+    if extra:
+        payload.update(extra)
+    perf_logger.info(json.dumps(payload, ensure_ascii=False))
