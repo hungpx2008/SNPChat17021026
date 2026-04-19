@@ -1,0 +1,18 @@
+================================================================================
+🔬 RAG ACCURACY & PERFORMANCE TEST
+📄 Document: Biểu giá dịch vụ.pdf
+================================================================================
+
+================================================================================
+📤 UPLOADING DOCUMENT
+================================================================================
+Found existing document: Biểu giá dịch vụ.pdf
+  Status: processing
+  Deleting stuck document...
+  Deleted: 200
+
+Uploading: Biểu giá dịch vụ.pdf
+Size: 786.7 KB
+✓ Upload successful: 0.02s
+  Document ID: 07a9d110-c9c5-4d09-b7a0-5e3cc1bf76e9
+Failed to upload document. Exiting.

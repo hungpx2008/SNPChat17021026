@@ -1,0 +1,293 @@
+================================================================================
+🔬 RAG ACCURACY & PERFORMANCE TEST
+📊 Testing với 390 documents có sẵn trong Qdrant
+================================================================================
+
+📝 Creating test session...
+✅ Session ID: cefb9eef-9ed1-4ae2-81b3-e7d17aa2a30d
+
+================================================================================
+[1/10] ❓ Giá dịch vụ xếp dỡ container 20 feet là bao nhiêu?
+================================================================================
+⏳ Waiting for RAG processing...
+⚠️  Chưa có response sau 6.1s
+
+================================================================================
+[2/10] ❓ Chi phí lưu bãi container tính như thế nào?
+================================================================================
+⏳ Waiting for RAG processing...
+⚠️  Chưa có response sau 6.1s
+
+================================================================================
+[3/10] ❓ Có những loại dịch vụ nào tại cảng?
+================================================================================
+⏳ Waiting for RAG processing...
+
+⏱️  Thời gian: 6042ms (6.04s)
+📏 Độ dài: 1214 ký tự
+📎 Citations: ✅
+
+💬 Câu trả lời:
+────────────────────────────────────────────────────────────────────────────────
+Chào bạn! Dựa trên tài liệu hiện có, giá dịch vụ xếp dỡ container **20 feet** có nhiều mức tùy theo loại hình dịch vụ và loại container (khô/lạnh). Cụ thể:
+
+### 1. Xếp dỡ container hàng/rỗng [1]
+
+| Loại container | 20' Khô | 20' Lạnh |
+|---|---|---|
+| Đơn giá (VNĐ) | **125.000** | **220.000** |
+
+### 2. Dịch vụ khác liên quan [2]
+
+| Loại | 20' Khô | 20' Lạnh |
+|---|---|---|
+| Đơn giá (VNĐ) | **170.000** | **210.000** |
+
+### 3. Hạ container xuất từ xe xuống đất [3]
+
+| Loại | 20' Khô | 20' Lạnh |
+|
+
+... (còn 714 ký tự)
+────────────────────────────────────────────────────────────────────────────────
+
+================================================================================
+[4/10] ❓ Giá container 40 feet khác gì so với 20 feet?
+================================================================================
+⏳ Waiting for RAG processing...
+
+⏱️  Thời gian: 6023ms (6.02s)
+📏 Độ dài: 1443 ký tự
+📎 Citations: ✅
+
+💬 Câu trả lời:
+────────────────────────────────────────────────────────────────────────────────
+Chào bạn! Dựa trên tài liệu hiện có, chi phí lưu bãi container tại Cảng Cát Lái được tính như sau:
+
+## Cách tính phí lưu bãi container
+
+**Công thức:**
+> **Thời gian tính phí lưu bãi = Thời gian lưu bãi thực tế – Thời gian miễn phí lưu bãi** [2]
+
+**Chi tiết:**
+
+- **Thời gian lưu bãi thực tế:** tổng thời gian lưu tại bãi Cảng Cát Lái, tính từ **ngày container nhập vào bãi** đến **ngày container được xuất khỏi bãi** [2]
+- **Thời gian miễn phí lưu bãi:** được quy định tại Bảng 24 và Bảng 25 (trong b
+
+... (còn 943 ký tự)
+────────────────────────────────────────────────────────────────────────────────
+
+================================================================================
+[5/10] ❓ Thời gian lưu bãi miễn phí là bao lâu?
+================================================================================
+⏳ Waiting for RAG processing...
+
+⏱️  Thời gian: 6039ms (6.04s)
+📏 Độ dài: 1443 ký tự
+📎 Citations: ✅
+
+💬 Câu trả lời:
+────────────────────────────────────────────────────────────────────────────────
+Chào bạn! Dựa trên tài liệu hiện có, chi phí lưu bãi container tại Cảng Cát Lái được tính như sau:
+
+## Cách tính phí lưu bãi container
+
+**Công thức:**
+> **Thời gian tính phí lưu bãi = Thời gian lưu bãi thực tế – Thời gian miễn phí lưu bãi** [2]
+
+**Chi tiết:**
+
+- **Thời gian lưu bãi thực tế:** tổng thời gian lưu tại bãi Cảng Cát Lái, tính từ **ngày container nhập vào bãi** đến **ngày container được xuất khỏi bãi** [2]
+- **Thời gian miễn phí lưu bãi:** được quy định tại Bảng 24 và Bảng 25 (trong b
+
+... (còn 943 ký tự)
+────────────────────────────────────────────────────────────────────────────────
+
+================================================================================
+[6/10] ❓ Dịch vụ kiểm hóa có giá bao nhiêu?
+================================================================================
+⏳ Waiting for RAG processing...
+
+⏱️  Thời gian: 6030ms (6.03s)
+📏 Độ dài: 1443 ký tự
+📎 Citations: ✅
+
+💬 Câu trả lời:
+────────────────────────────────────────────────────────────────────────────────
+Chào bạn! Dựa trên tài liệu hiện có, chi phí lưu bãi container tại Cảng Cát Lái được tính như sau:
+
+## Cách tính phí lưu bãi container
+
+**Công thức:**
+> **Thời gian tính phí lưu bãi = Thời gian lưu bãi thực tế – Thời gian miễn phí lưu bãi** [2]
+
+**Chi tiết:**
+
+- **Thời gian lưu bãi thực tế:** tổng thời gian lưu tại bãi Cảng Cát Lái, tính từ **ngày container nhập vào bãi** đến **ngày container được xuất khỏi bãi** [2]
+- **Thời gian miễn phí lưu bãi:** được quy định tại Bảng 24 và Bảng 25 (trong b
+
+... (còn 943 ký tự)
+────────────────────────────────────────────────────────────────────────────────
+
+================================================================================
+[7/10] ❓ Có phụ phí nào khi làm việc ngoài giờ không?
+================================================================================
+⏳ Waiting for RAG processing...
+
+⏱️  Thời gian: 6037ms (6.04s)
+📏 Độ dài: 1018 ký tự
+📎 Citations: ✅
+
+💬 Câu trả lời:
+────────────────────────────────────────────────────────────────────────────────
+Chào bạn! Dựa trên tài liệu hiện có, tôi có thể liệt kê một số dịch vụ được đề cập tại cảng:
+
+## Các loại dịch vụ tại cảng
+
+- **Xếp dỡ container** (hàng/rỗng, xuất/nhập)
+- **Lưu bãi container** (hàng & rỗng)
+- **Cung ứng tàu biển**: thực phẩm, nhu yếu phẩm, thiết bị phụ tùng thay thế, vệ sinh hầm hàng, hầm máy và sửa chữa đột xuất [1]
+- **Hạ container** từ xe xuống bãi
+- **Cấp container rỗng** cho khách hàng [3]
+- **Đóng bao hàng hóa** (bao bì do khách hàng cung cấp) [4]
+- **Kiểm hóa container**
+
+... (còn 518 ký tự)
+────────────────────────────────────────────────────────────────────────────────
+
+================================================================================
+[8/10] ❓ Chi phí cho hàng nguy hiểm như thế nào?
+================================================================================
+⏳ Waiting for RAG processing...
+
+⏱️  Thời gian: 6035ms (6.03s)
+📏 Độ dài: 1018 ký tự
+📎 Citations: ✅
+
+💬 Câu trả lời:
+────────────────────────────────────────────────────────────────────────────────
+Chào bạn! Dựa trên tài liệu hiện có, tôi có thể liệt kê một số dịch vụ được đề cập tại cảng:
+
+## Các loại dịch vụ tại cảng
+
+- **Xếp dỡ container** (hàng/rỗng, xuất/nhập)
+- **Lưu bãi container** (hàng & rỗng)
+- **Cung ứng tàu biển**: thực phẩm, nhu yếu phẩm, thiết bị phụ tùng thay thế, vệ sinh hầm hàng, hầm máy và sửa chữa đột xuất [1]
+- **Hạ container** từ xe xuống bãi
+- **Cấp container rỗng** cho khách hàng [3]
+- **Đóng bao hàng hóa** (bao bì do khách hàng cung cấp) [4]
+- **Kiểm hóa container**
+
+... (còn 518 ký tự)
+────────────────────────────────────────────────────────────────────────────────
+
+================================================================================
+[9/10] ❓ Quy định về thanh toán dịch vụ ra sao?
+================================================================================
+⏳ Waiting for RAG processing...
+
+⏱️  Thời gian: 6038ms (6.04s)
+📏 Độ dài: 1018 ký tự
+📎 Citations: ✅
+
+💬 Câu trả lời:
+────────────────────────────────────────────────────────────────────────────────
+Chào bạn! Dựa trên tài liệu hiện có, tôi có thể liệt kê một số dịch vụ được đề cập tại cảng:
+
+## Các loại dịch vụ tại cảng
+
+- **Xếp dỡ container** (hàng/rỗng, xuất/nhập)
+- **Lưu bãi container** (hàng & rỗng)
+- **Cung ứng tàu biển**: thực phẩm, nhu yếu phẩm, thiết bị phụ tùng thay thế, vệ sinh hầm hàng, hầm máy và sửa chữa đột xuất [1]
+- **Hạ container** từ xe xuống bãi
+- **Cấp container rỗng** cho khách hàng [3]
+- **Đóng bao hàng hóa** (bao bì do khách hàng cung cấp) [4]
+- **Kiểm hóa container**
+
+... (còn 518 ký tự)
+────────────────────────────────────────────────────────────────────────────────
+
+================================================================================
+[10/10] ❓ Có ưu đãi gì cho khách hàng thường xuyên không?
+================================================================================
+⏳ Waiting for RAG processing...
+
+⏱️  Thời gian: 6028ms (6.03s)
+📏 Độ dài: 1347 ký tự
+📎 Citations: ✅
+
+💬 Câu trả lời:
+────────────────────────────────────────────────────────────────────────────────
+Chào bạn! Dựa trên tài liệu hiện có, dưới đây là so sánh giá giữa container **20 feet** và **40 feet** ở một số dịch vụ:
+
+## 1. Phí quá hạn trải bãi [1]
+
+| Loại | 20' Khô | 40' Khô | 20' Lạnh | 40' & 45' Lạnh |
+|---|---|---|---|---|
+| Đơn giá (VNĐ/ngày) | 170.000 | 230.000 | 210.000 | 295.000 |
+
+## 2. Phí dịch vụ khác [3]
+
+| Loại container | Đơn giá (VNĐ) |
+|---|---|
+| Container 20' | 55.000 |
+| Container 40' & 45' | 77.000 |
+
+## 3. Hạ container ở tầng [4]
+
+| Loại | 20' Khô | 40' Khô | 20' Lạnh 
+
+... (còn 847 ký tự)
+────────────────────────────────────────────────────────────────────────────────
+
+================================================================================
+📊 KẾT QUẢ TỔNG HỢP
+================================================================================
+
+✅ Hoàn thành: 8/10 câu hỏi
+
+⏱️  Thời gian phản hồi:
+   • Trung bình: 6034ms (6.03s)
+   • Nhanh nhất: 6023ms (6.02s)
+   • Chậm nhất: 6042ms (6.04s)
+
+📏 Độ dài câu trả lời:
+   • Trung bình: 1243 ký tự
+   • Min: 1018 ký tự
+   • Max: 1443 ký tự
+
+📎 Citations:
+   • Có citations: 8/8 câu
+   • Tỷ lệ: 100.0%
+
+🎯 Đánh giá tổng thể: 🔴 CHẬM
+
+📋 Chi tiết từng câu:
+#    Thời gian    Độ dài     Citations   
+────────────────────────────────────────────────────────────────────────────────
+1    6042ms (6.0s)  1214       ✅
+2    6023ms (6.0s)  1443       ✅
+3    6039ms (6.0s)  1443       ✅
+4    6030ms (6.0s)  1443       ✅
+5    6037ms (6.0s)  1018       ✅
+6    6035ms (6.0s)  1018       ✅
+7    6038ms (6.0s)  1018       ✅
+8    6028ms (6.0s)  1347       ✅
+
+================================================================================
+
+🎯 ĐÁNH GIÁ ĐỘ CHÍNH XÁC:
+────────────────────────────────────────────────────────────────────────────────
+  [1] ✅ OK
+  [2] ✅ OK
+  [3] ✅ OK
+  [4] ✅ OK
+  [5] ✅ OK
+  [6] ✅ OK
+  [7] ✅ OK
+  [8] ✅ OK
+
+================================================================================
+✅ Test hoàn tất!
+================================================================================
+

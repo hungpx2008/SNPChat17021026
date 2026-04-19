@@ -150,15 +150,14 @@ def search_memories(
 ) -> dict:
     """Search memories. Equivalent to POST /search."""
     mem = get_memory()
-    params = {}
+    filters = {}
     if user_id:
-        params["user_id"] = user_id
+        filters["user_id"] = user_id
     if agent_id:
-        params["agent_id"] = agent_id
+        filters["agent_id"] = agent_id
     if run_id:
-        params["run_id"] = run_id
-    params["limit"] = min(limit, 10)
-    return mem.search(query=query, **params)
+        filters["run_id"] = run_id
+    return mem.search(query=query, filters=filters, limit=min(limit, 10))
 
 
 def get_all_memories(

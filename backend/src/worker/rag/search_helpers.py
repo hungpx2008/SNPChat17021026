@@ -279,29 +279,25 @@ def _build_qdrant_filter(user_id: str | None, department: str | None):
         MatchValue,
     )
 
-    # Access control: user's own chunks OR department-public chunks
-    should_conditions = []
-    if user_id:
-        should_conditions.append(
-            FieldCondition(key="user_id", match=MatchValue(value=user_id))
-        )
-    if department:
-        should_conditions.append(Filter(must=[
-            FieldCondition(key="department", match=MatchValue(value=department)),
-            FieldCondition(key="is_public", match=MatchValue(value=True)),
-        ]))
+    # Access control: TEMPORARILY DISABLED - allow all users to access knowledge base
+    # TODO: Re-enable user_id/department filters when multi-tenant access control is needed
+    # should_conditions = []
+    # if user_id:
+    #     should_conditions.append(
+    #         FieldCondition(key="user_id", match=MatchValue(value=user_id))
+    #     )
+    # if department:
+    #     should_conditions.append(Filter(must=[
+    #         FieldCondition(key="department", match=MatchValue(value=department)),
+    #         FieldCondition(key="is_public", match=MatchValue(value=True)),
+    #     ]))
 
     # Quality gate: exclude chunks explicitly marked as low quality via feedback
     must_not_conditions = [
         FieldCondition(key="quality", match=MatchValue(value="low")),
     ]
 
-    if should_conditions:
-        return Filter(
-            should=should_conditions,
-            must_not=must_not_conditions,
-        )
-    # No access constraints — only apply quality filter
+    # Return filter with only quality gate (no access control)
     return Filter(must_not=must_not_conditions)
 
 

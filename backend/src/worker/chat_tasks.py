@@ -27,6 +27,8 @@ from src.core.constants import (
     CHAT_CHUNK_SIZE,
     CHAT_EMBED_TRUNCATE,
     RAG_FEEDBACK_SIMILARITY,
+    RAG_MIN_RESULTS,
+    RAG_SCORE_THRESHOLD,
     SUMMARY_KEEP_COUNT,
     SUMMARY_TRIM_TOKENS,
 )
@@ -237,9 +239,29 @@ def rag_document_search(
     """RAG Document Search — find and synthesize answers from uploaded documents."""
     logger.info(f"[RAG] Search for session {session_id}: {question[:50]}...")
     try:
+        # 0. HyDE query expansion for short queries
+        from src.services.query_expander import expand_query
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    expanded_question = pool.submit(asyncio.run, expand_query(question)).result()
+            else:
+                expanded_question = loop.run_until_complete(expand_query(question))
+        except RuntimeError:
+            expanded_question = asyncio.run(expand_query(question))
+
+        if expanded_question != question:
+            logger.info(f"[HyDE] Query expanded: '{question}' → '{expanded_question[:100]}...'")
+            search_query = expanded_question
+        else:
+            search_query = question
+
         # 1. Search: enhance query → cache → hybrid → fallback → parent resolve
         hybrid_results, enhanced = _run_hybrid_search(
-            question, user_id, department, embed_fn=embed_query,
+            search_query, user_id, department, embed_fn=embed_query,
         )
         runtime_llm_settings = _load_message_llm_settings(source_message_id)
 
@@ -248,10 +270,32 @@ def rag_document_search(
         context_text = "\n\n---\n\n".join(context_blocks).strip()
         logger.info(f"[RAG CONTEXT (Hybrid)]:\n{context_text}\n{'='*50}")
 
-        # 3. Synthesize via LLM (with fallback)
+        # 3. Quality check: only call LLM if we have enough good results
+        from src.core.constants import RAG_MIN_RESULTS
+
+        # Calculate average score of results
+        avg_score = 0.0
+        if hybrid_results:
+            scores = [r.score for r in hybrid_results if hasattr(r, 'score') and r.score]
+            avg_score = sum(scores) / len(scores) if scores else 0.0
+
+        logger.info(
+            f"[RAG] Quality check: {len(hybrid_results)} results, "
+            f"avg_score={avg_score:.3f}, min_required={RAG_MIN_RESULTS}"
+        )
+
+        # 4. Synthesize via LLM (with strict quality gate)
         result_text = ""
         llm_error: str | None = None
-        if context_text:
+
+        # Only call LLM if we have BOTH enough results AND good context
+        should_call_llm = (
+            context_text
+            and len(hybrid_results) >= RAG_MIN_RESULTS
+            and avg_score >= RAG_SCORE_THRESHOLD
+        )
+
+        if should_call_llm:
             try:
                 unified_ctx = _gather_unified_context(
                     question, session_id, user_id, department,
@@ -267,9 +311,16 @@ def rag_document_search(
             except (httpx.HTTPError, KeyError, ValueError) as e:
                 llm_error = str(e)
                 logger.error("[RAG] LLM synthesis FAILED: %s", e)
+        else:
+            logger.info(
+                "[RAG] Skipping LLM call - quality gate not met "
+                f"(context={bool(context_text)}, results={len(hybrid_results)}, "
+                f"avg_score={avg_score:.3f})"
+            )
 
         if not result_text:
-            result_text = _build_fallback_answer([] if llm_error else context_blocks)
+            # Use empty list to force "not found" message instead of showing weak results
+            result_text = _build_fallback_answer([] if (llm_error or not should_call_llm) else context_blocks)
 
         result_text = _sanitize_generated_answer(result_text)
         result_text += _format_citations_footer(citations)

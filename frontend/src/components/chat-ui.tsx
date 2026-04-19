@@ -417,7 +417,7 @@ export function ChatUI({ department }: { department: string }) {
             Object.keys(userMessageMetadata).length > 0
               ? userMessageMetadata
               : undefined,
-          mode: agentMode,
+          mode: agentMode === "auto" ? "chat" : agentMode,
         });
 
         const taskDispatched = appendResult.task_dispatched === true;

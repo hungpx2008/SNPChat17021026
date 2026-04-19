@@ -76,6 +76,34 @@ class BranchInfoSchema(BaseModel):
     fork_point_id: UUID | None = None
 
 
+class BranchMessageSchema(BaseModel):
+    """Schema for messages in a branch navigation response."""
+    message: MessageSchema
+    branch_info: BranchInfoSchema
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TreeNodeSchema(BaseModel):
+    """Schema for a node in the conversation tree."""
+    id: str
+    role: str
+    content: str
+    created_at: datetime
+    branch_index: int
+    is_active_branch: bool
+    children: list['TreeNodeSchema'] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ConversationTreeSchema(BaseModel):
+    """Schema for the full conversation tree."""
+    roots: list[TreeNodeSchema] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class SearchQuery(BaseModel):
     user_id: Optional[str] = None
     department: Optional[str] = None

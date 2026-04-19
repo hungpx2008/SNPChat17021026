@@ -499,10 +499,13 @@ def _do_full_processing(
             f"children for {filename}"
         )
     else:
-        # ── Fallback: flat chunks for VLM image descriptions ──
-        chunks_with_pages = _smart_chunk(extracted_text, chunk_size=512, overlap=50)
+        # ── Fallback: context-aware chunks for VLM/fallback paths ──
+        from src.services.chunk_optimizer import create_context_aware_chunks
+        chunks_with_pages = create_context_aware_chunks(
+            extracted_text, chunk_size=512, overlap=50
+        )
         chunk_payload_meta = [{} for _ in chunks_with_pages]
-        logger.info(f"[chunking] Smart-chunked {len(chunks_with_pages)} chunks for {filename}")
+        logger.info(f"[chunking] Context-aware chunked {len(chunks_with_pages)} chunks for {filename}")
 
     if not chunks_with_pages:
         raise ValueError(f"No chunks generated for {filename}")
